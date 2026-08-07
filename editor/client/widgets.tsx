@@ -14,6 +14,7 @@ import type {
   AiRefineResponse,
   AiReviewRequest,
   AiReviewResponse,
+  AnalyzeResponse,
   AiDoctorResult,
   ConfigSaveResult,
   DraftData,
@@ -198,6 +199,11 @@ export async function postProxy(): Promise<ProxyResponse> {
   return (await request("/api/proxy", {})) as ProxyResponse;
 }
 
+/** 開いた瞬間の自動解析(transcribe → detect)。plan は走らない。 */
+export async function postAnalyze(): Promise<AnalyzeResponse> {
+  return (await request("/api/analyze", {})) as AnalyzeResponse;
+}
+
 /** 設定画面の保存。config.yaml の該当キーを書き換え(コメント保持)、
  * サーバー内の設定にも即反映される。戻り値は解決済みの新しい設定 */
 export async function postConfig(patch: ConfigPatch): Promise<ConfigSaveResult> {
@@ -208,11 +214,6 @@ export async function postConfig(patch: ConfigPatch): Promise<ConfigSaveResult> 
  * 入力はディスクの JSON を読むので、呼ぶ前に保存しておくこと */
 export async function postPreview(): Promise<{ path: string }> {
   return (await request("/api/preview", {})) as { path: string };
-}
-
-/** AI に初版(transcribe→detect→plan)を作らせる。 */
-export async function postRun(force: boolean): Promise<void> {
-  await request("/api/run", { force });
 }
 
 /** 最終レンダー(final.mp4)。approved: true が必要で、数分かかることがある。

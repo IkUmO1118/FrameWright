@@ -67,8 +67,11 @@ export interface Region {
 /** transcribe が生成(transcript.json)。JSON Schema: schemas/transcript.schema.json
  * (スキーマを変えたらこのコメント・validate.ts・usage.md と揃える。§5点セット) */
 export interface Transcript {
-  /** 開くために決定論的に作った未編集の初期値。人間/AI が書けば消える。 */
-  generatedBy?: "bootstrap";
+  /** 機械が書いたまま人間がまだ手を入れていない印。
+   * "bootstrap" = editor が開くときに補った空文書。
+   * "transcribe" = 自動解析の文字起こし結果。テロップとしては描画しない。
+   * 人間か AI が transcript に触れた時点で消える(=採用)。 */
+  generatedBy?: "bootstrap" | "transcribe";
   language: string;
   model: string;
   segments: TranscriptSegment[];

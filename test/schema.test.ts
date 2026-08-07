@@ -193,6 +193,14 @@ test("ピン留め: common.schema.json の id.pattern === ID_RE.source(ids.ts)",
   assert.equal(common.$defs?.id.pattern, ID_RE.source);
 });
 
+test("ピン留め: transcript.generatedBy enum === Transcript.generatedBy(types.ts)", () => {
+  const types = /generatedBy\?: ([^;]+);/.exec(TYPES_TS)?.[1] ?? "";
+  const values = [...types.matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+  assert.ok(values.length > 0);
+  const transcript = loadRegistry()["transcript.schema.json"];
+  sortedEq(transcript.properties?.generatedBy.enum as string[], values);
+});
+
 test("ピン留め: CaptionAnim の in/out enum === CaptionAnimKind(types.ts)", () => {
   const kinds = extractUnionLiterals(TYPES_TS, "CaptionAnimKind");
   assert.ok(kinds.length > 0);

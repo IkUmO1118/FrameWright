@@ -24,14 +24,16 @@
      └─ ingest(映像解析・マイク音声抽出)→ manifest.json
         + 空の transcript.json + 全編 keep の cutplan.json
   │
-② run(任意)    AI に初版を作らせる
+② 自動解析      エディタで開くと必要時だけ transcribe → detect
      ├─ transcribe  whisper.cpp で文字起こし     → transcript.json / .srt
      ├─ detect      無音検出(決定的・LLM不使用) → cuts.auto.json
+  │
+③ run(任意)     CLI で初版まで作りたいときだけ plan まで実行
      └─ plan        LLMで意味カット・章立て       → cutplan.json / chapters.json / meta.json
   │
-③ 編集           GUI エディタ、または収録フォルダの JSON を直接編集
+④ 編集           GUI エディタ、または収録フォルダの JSON を直接編集
   │
-④ 確認 → 承認    preview / GUI で確認 → approve(承認レコード approvals.json)
+⑤ 確認 → 承認    preview / GUI で確認 → approve(承認レコード approvals.json)
   │
 ⑤ render         合成エンジンで書き出し          → cut.mp4(中間)→ final.mp4
 ```
@@ -177,7 +179,7 @@ node src/cli.ts editor ~/Movies/framewright/2026-07-02-my-recording --layout obs
 node src/cli.ts editor ~/Movies/framewright/2026-08-03-short --canvas portrait
 
 # ② 必要なら文字起こしや自動カット案を明示実行
-#    エディタの「AI に初版を作らせる」ボタン = run(下の3つをまとめて実行)
+#    エディタで開く場合、文字起こしと無音検出は必要時に自動で走る
 node src/cli.ts transcribe ~/Movies/framewright/2026-07-02-my-recording
 node src/cli.ts plan       ~/Movies/framewright/2026-07-02-my-recording
 
@@ -296,7 +298,7 @@ node src/cli.ts run    <dir> --layout obs-canvas
 | コマンド | 何をするか | 使う場面 |
 |---|---|---|
 | `editor` (引数なし) | `recordingsDir` / `recordingsDirs` のプロジェクト一覧(ランチャー)を開く | どのプロジェクトを開くか選ぶ / 新規プロジェクトを作る |
-| `run <dir>` | **AI に初版を作らせる**(transcribe→detect→plan)。`manifest.json` が無いフォルダでは `ingest` から始める | 文字起こし+自動カット案を一気に作りたいとき。手編集済みのファイルを上書きする場合だけ `--force` が必要(実行前に `backups/` へ退避) |
+| `run <dir>` | CLI で **AI 初版まで作る**(transcribe→detect→plan)。`manifest.json` が無いフォルダでは `ingest` から始める | 文字起こし+自動カット案を一気に作りたいとき。手編集済みのファイルを上書きする場合だけ `--force` が必要(実行前に `backups/` へ退避) |
 | `derive <dir> --name … --canvas … --range …` | 元メディアと transcript を共有する**派生プロジェクト**を作る | 同じ収録から縦ショートなど別サイズも出したいとき |
 | `ingest <dir>` | 映像解析・マイク音声抽出 → manifest.json | config を変えて部分的にやり直すとき |
 | `transcribe <dir>` | whisper で文字起こし → transcript.json / .srt | 再実行はテロップ手編集を上書き(既存は backups/ へ退避) |
@@ -315,7 +317,7 @@ node src/cli.ts run    <dir> --layout obs-canvas
 `--force` が必要で、その際も手編集ファイル一式が `backups/<日時>/` へ自動退避されます
 (**自分の判断で `--force` を付けない**)。エディタで開いた直後の「空の transcript /
 全編 keep の cutplan」は bootstrap が作った初期値と分かるので、`--force` なしで
-`run` を通せます(= 開いてすぐ「AI に初版を作らせる」が押せる)。
+`run` を通せます。エディタで開く場合は、文字起こしと無音検出だけが必要時に自動で走ります。
 
 ---
 
@@ -329,7 +331,7 @@ node src/cli.ts run    <dir> --layout obs-canvas
    または node src/cli.ts editor <dir>        フォルダを直接開く
    OBS 拡張キャンバスなら: --layout obs-canvas / 縦なら: --canvas portrait
    ベースメディアが未確定なら、開いた画面で動画/音声を選ぶ
-③ 必要なら transcribe / plan を明示実行(GUI なら「AI に初版を作らせる」= run)
+③ 必要なら transcribe / plan を明示実行(GUI では文字起こしと無音検出だけ自動実行)
 ④ 編集タイム(3章の表のファイルを直す) ── GUI か JSON 直接編集
 ⑤ preview か GUI で確認 → 気に入らなければ ④⑤ を往復
 ⑥ node src/cli.ts approve <dir>     承認(GUI なら「書き出し」→「承認済み」チェック)

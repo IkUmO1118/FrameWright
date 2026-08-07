@@ -47,8 +47,8 @@ test("the header AI launcher keeps its behavior props during the P2 header migra
   assert.match(launcher, /size="sm"/);
   assert.match(launcher, /className=\{`aiCommandLauncher\$\{aiEditEnabled \? " on" : ""\}`\}/);
   assert.match(launcher, /ref=\{aiCommandLauncherRef\}/);
-  assert.match(launcher, /disabled=\{aiWorkflowLocked\}/);
-  assert.match(launcher, /title=\{[\s\S]*aiWorkflowLocked[\s\S]*aiWorkflowTitle[\s\S]*aiEditEnabled[\s\S]*"AI編集モードを終了"[\s\S]*anyDirty[\s\S]*"保存してから AI 一発編集"[\s\S]*"AI 一発編集を開く"[\s\S]*\}/);
+  assert.match(launcher, /disabled=\{aiWorkflowLocked \|\| analysisBusy\}/);
+  assert.match(launcher, /title=\{[\s\S]*aiWorkflowLocked[\s\S]*aiWorkflowTitle[\s\S]*analysisBusy[\s\S]*"文字起こし中です。終わると AI 編集を使えます"[\s\S]*aiEditEnabled[\s\S]*"AI編集モードを終了"[\s\S]*anyDirty[\s\S]*"保存してから AI 一発編集"[\s\S]*"AI 一発編集を開く"[\s\S]*\}/);
   assert.match(app, /setAiCommandScope\("global"\);\s+setAiCommandOpen\(true\);/);
   assert.match(app, /\{aiWorkflowLocked\s+\? "編集中" : aiEditEnabled \? "AI編集 ON" : "AI編集"\}/);
 });

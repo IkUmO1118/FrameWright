@@ -15,29 +15,32 @@ LLM に渡るのは**文字起こしテキスト**(と任意の `brief.md`)だ�
 ## パイプライン
 
 入口は**エディタでプロジェクトを開くこと**です(標準的な NLE と同じ)。
-自動処理はユーザーが明示的に頼んだときだけ走ります。
+エディタで開いた直後、文字起こしが未実行なら文字起こしと無音検出だけを自動で走らせます。
 
 ```
 ① editor          プロジェクトを開く(空フォルダでもよい)
      └─ 画面内でベース動画/音声とキャンバス(16:9 / 9:16 / 1:1 …)を選ぶ
      └─ ingest が走り manifest.json + 空 transcript + 全編 keep cutplan ができる
   │
-② run(任意)     AI に初版を作らせる = transcribe → detect → plan
+② 自動解析       エディタで開くと必要時だけ transcribe → detect
      ├─ transcribe  whisper.cpp で文字起こし    → transcript.json / .srt
      ├─ detect      無音検出(ffmpeg・決定的)   → cuts.auto.json
+  │
+③ run(任意)      CLI で初版まで作りたいときだけ plan まで実行
      └─ plan        LLMで意味カット・章立て     → cutplan.json / chapters.json / meta.json
   │
-③ 編集            エディタ、または収録フォルダの JSON を直接編集
+④ 編集            エディタ、または収録フォルダの JSON を直接編集
   │
-④ preview         カット結果の確認用動画       → preview.mp4
+⑤ preview         カット結果の確認用動画       → preview.mp4
   │
   ├─ ★ 人間が preview を見て approve(承認ゲート。AI は通せない)
   │
-⑤ render          合成エンジンで書き出し        → cut.mp4(中間)/ final.mp4
+⑥ render          合成エンジンで書き出し        → cut.mp4(中間)/ final.mp4
 ```
 
 各ステージは JSON を読んで JSON を書くだけなので、単独で再実行できます。
-`run` は②だけを指すので、収録直後に1発叩く従来の使い方もそのまま通ります
+`run` は CLI で transcribe → detect → plan をまとめて走らせるコマンドです。
+収録直後に1発叩く従来の使い方もそのまま通ります
 (`manifest.json` がまだ無いフォルダでは `ingest` から始めます)。
 
 **1プロジェクト = 1フォルダ = 1出力**です。同じ収録から縦のショートも作りたい
@@ -157,8 +160,8 @@ node src/cli.ts editor ~/Movies/framewright/2026-07-02-my-recording
 # 縦(9:16)のプロジェクトとして作る
 node src/cli.ts editor ~/Movies/framewright/2026-08-03-short --canvas portrait
 
-# AI に初版(文字起こし・自動カット案・章立て)を作らせる
-#   エディタのヘッダー「AI に初版を作らせる」ボタンと同じ処理
+# CLI で AI に初版(文字起こし・自動カット案・章立て)を作らせる
+#   エディタで開く場合、文字起こしと無音検出は必要時に自動で走る
 node src/cli.ts run ~/Movies/framewright/2026-07-02-my-recording
 ```
 

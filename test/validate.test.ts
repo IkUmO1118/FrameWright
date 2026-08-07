@@ -236,6 +236,21 @@ test("words: 無し(未指定)の transcript は語タイムスタンプ不在�
     w.file === "transcript.json" && w.message.includes("語タイムスタンプ")));
 });
 
+test("transcript: generatedBy=transcribe はテロップ未採用を警告する", () => {
+  const r = validateDocs(DIR, baseDocs({
+    transcript: {
+      generatedBy: "transcribe",
+      segments: [{
+        start: 1, end: 3, text: "こんにちは",
+        words: [{ text: "こんにちは", start: 1, end: 3 }],
+      }],
+    },
+  }));
+  assert.deepEqual(r.errors, []);
+  assert.ok(r.warnings.some((w) =>
+    w.file === "transcript.json" && w.message.includes("テロップとして未採用")));
+});
+
 test("words: segment が1つも無い transcript は語タイムスタンプ不在を警告しない", () => {
   const r = validateDocs(DIR, baseDocs({ transcript: { segments: [] } }));
   assert.deepEqual(r.errors, []);

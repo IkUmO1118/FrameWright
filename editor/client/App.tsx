@@ -240,8 +240,8 @@ import {
   postAiPropose,
   postAiRefine,
   postAiReview,
+  postAnalyze,
   postPreview,
-  postRun,
   postProxy,
   postRender,
   postHyperframeRender,
@@ -769,10 +769,12 @@ const EditorApp = () => {
   /** proxy.* の生成中か。busy と分けて、生成中(初回の数十秒)も
    * 編集・保存・アップロードを普通に受け付ける */
   const [proxyBusy, setProxyBusy] = useState(false);
+  /** 開いた瞬間の自動解析(文字起こし+無音検出)の実行中。 */
+  const [analysisBusy, setAnalysisBusy] = useState(false);
   /** GUI から起動した書き出しジョブ(preview / render)。running 中はボタンを
    * 無効化し、done で完了先を出す。null は非実行 */
   const [job, setJob] = useState<{
-    stage: "run" | "preview" | "render";
+    stage: "preview" | "render";
     status: "running" | "done";
     path?: string;
   } | null>(null);
@@ -2060,13 +2062,21 @@ const EditorApp = () => {
 
   /* ---------------- タイムラインのクリップ ---------------- */
 
+  /** テロップとして採用済みの segments。未採用なら空。
+   * スクリプトタブ・AI 編集・選択の添字は transcript.segments のままなので、
+   * ここで置き換えるのは「タイムラインに出すクリップ」だけ。 */
+  const captionSegments = useMemo(
+    () => (!transcript || transcript.generatedBy === "transcribe" ? [] : transcript.segments),
+    [transcript],
+  );
+
   const clips = useMemo<Clip[]>(() => {
     if (!transcript || !built) return [];
     if (!cutplan || !overlays) return [];
     const cs: Clip[] = [];
     // テロップ: transcript.segments を直接編集する(index = segments の添字)。
     // セグメントのトラック番号 → caption / cap<N> トラックへ
-    transcript.segments.forEach((s, i) => {
+    captionSegments.forEach((s, i) => {
       const parts = remapInterval(s.start, s.end, timeline);
       parts.forEach((iv, j) => {
         cs.push({
@@ -2228,7 +2238,7 @@ const EditorApp = () => {
     }
     return cs;
   }, [
-    cutplan, overlays, transcript, bgm, built, timeline, duration, proj?.bgmFile,
+    cutplan, overlays, transcript, bgm, built, timeline, duration, proj?.bgmFile, captionSegments,
   ]);
 
   /** ステッカー/エフェクト タブからドラッグ中のプリセット。null = ドラッグしていない。
@@ -2703,13 +2713,12 @@ const EditorApp = () => {
   /** テロップごとのカット後の表示区間(編集時だけ再計算)。再生中の
    * 「いま表示中か」の判定を毎フレーム軽く済ませるための前計算 */
   const captionIntervals = useMemo(() => {
-    if (!transcript) return [];
-    return transcript.segments.map((s, i) => ({
+    return captionSegments.map((s, i) => ({
       index: i,
       empty: s.text.trim().length === 0,
       ivs: remapInterval(s.start, s.end, timeline),
     }));
-  }, [transcript, timeline]);
+  }, [captionSegments, timeline]);
 
   /** outT に表示中のテロップの添字列(LiveCaptionOverlay の購読キー)。
    * キーが変わったとき=表示中の組が入れ替わったときだけ本体を作り直す */
@@ -5043,6 +5052,48 @@ const EditorApp = () => {
     }
   };
 
+  /** 開いた瞬間の自動解析。transcript の更新は SSE 経由、silences だけレスポンスで反映する。 */
+  const runAnalysis = async (): Promise<void> => {
+    setAnalysisBusy(true);
+    const toastId = addToast({
+      kind: "progress",
+      message: "文字起こし中…(終わると AI 編集が使えます。この間も編集・保存はできます)",
+    });
+    try {
+      const out = await postAnalyze();
+      setProj((p) => p && { ...p, analysisNeeded: false, silences: out.silences });
+      updateToast(toastId, {
+        kind: "success",
+        message: out.transcriptSkipped
+          ? "文字起こし中にテロップが編集されたため、手編集を残して結果を破棄しました"
+          : "文字起こしが終わりました。AI 編集を使えます",
+        ttlMs: 6000,
+      });
+    } catch (e) {
+      updateToast(toastId, {
+        kind: "error",
+        message: `文字起こしに失敗しました: ${(e as Error).message}`,
+        ttlMs: 0,
+        action: { label: "再試行", onClick: () => { void runAnalysis(); } },
+      });
+    } finally {
+      setAnalysisBusy(false);
+    }
+  };
+
+  /** 自動解析が書いた transcript(未採用)をテロップとして採用する。
+   * マーカーを外すだけ = ⌘Z で戻せる。実体の書き込みは通常の保存。 */
+  const adoptCaptions = () => {
+    if (!transcript || transcript.generatedBy !== "transcribe") return;
+    pushHistory();
+    setTranscript((t) => {
+      if (!t) return t;
+      const next = { ...t };
+      delete next.generatedBy;
+      return next;
+    });
+  };
+
   /** 書き出し(preview / render)を GUI から起動する。preview / render は
    * ディスクの JSON を読むので、未保存の編集があれば先に保存してから走らせる
    * (承認チェックも cutplan の一部なので、これでディスクへ反映される)。
@@ -5092,44 +5143,6 @@ const EditorApp = () => {
     }
   };
 
-  /** AI 初版生成。bootstrap のままなら確認なし、手編集があれば明示確認して
-   * 保存→backups 退避付き force 実行にする。多重起動は client/server 両方で抑止。 */
-  const runInitialDraft = async () => {
-    if (job?.status === "running" || !proj) return;
-    const needsForce = proj.runNeedsForce || anyDirty;
-    if (needsForce && !window.confirm(
-      "手編集した内容が AI の生成物で上書きされます。実行前に backups/ へ退避します",
-    )) return;
-    setError(null);
-    if (anyDirty) {
-      setBusy("save");
-      try {
-        await save();
-      } catch (e) {
-        setError((e as Error).message);
-        return;
-      } finally {
-        setBusy(null);
-      }
-    }
-    setJob({ stage: "run", status: "running" });
-    const toastId = addToast({
-      kind: "progress",
-      message: "AI が初版を生成中…(文字起こしと編集案の作成に時間がかかります)",
-    });
-    try {
-      await postRun(needsForce);
-      const next = await getProject();
-      if (next.state === "ready") acceptReadyProject(next);
-      setJob(null);
-      updateToast(toastId, { kind: "success", message: "AI の初版ができました", ttlMs: 6000 });
-    } catch (e) {
-      setError((e as Error).message);
-      setJob(null);
-      dismissToast(toastId);
-    }
-  };
-
   // proxy.* が無ければ開いた時点で自動生成を始める。プロキシ無しの
   // エディタは再生できず「生成しない」選択肢が無いので、確認は挟まない
   // (生成中もタイムライン・テロップの編集と保存は普通にできる)。
@@ -5139,6 +5152,15 @@ const EditorApp = () => {
     if (!proj || proj.proxyExists || proxyKickedRef.current) return;
     proxyKickedRef.current = true;
     void generateProxy();
+  }, [proj]);
+
+  // transcript.json が bootstrap の初期値のままなら、開いた時点で文字起こしと
+  // 無音検出を始める。plan は走らせない。
+  const analysisKickedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!proj || !proj.analysisNeeded || analysisKickedRef.current.has(proj.dir)) return;
+    analysisKickedRef.current.add(proj.dir);
+    void runAnalysis();
   }, [proj]);
 
   /* ---------------- 左パネル(タブ・分割バー) ---------------- */
@@ -5996,15 +6018,19 @@ const EditorApp = () => {
               variant={aiEditEnabled ? "default" : "secondary"}
               size="sm"
               className={`aiCommandLauncher${aiEditEnabled ? " on" : ""}`}
-              disabled={aiWorkflowLocked}
+              disabled={aiWorkflowLocked || analysisBusy}
               title={
                 aiWorkflowLocked
                   ? aiWorkflowTitle
-                  : aiEditEnabled
-                    ? "AI編集モードを終了"
-                    : anyDirty
-                      ? "保存してから AI 一発編集"
-                      : "AI 一発編集を開く"
+                  : analysisBusy
+                    ? "文字起こし中です。終わると AI 編集を使えます"
+                    : proj.analysisBlocked !== null
+                      ? proj.analysisBlocked
+                      : aiEditEnabled
+                        ? "AI編集モードを終了"
+                        : anyDirty
+                          ? "保存してから AI 一発編集"
+                          : "AI 一発編集を開く"
               }
               onClick={() => {
                 if (aiEditEnabled) {
@@ -6030,11 +6056,15 @@ const EditorApp = () => {
           <TooltipContent>
             {aiWorkflowLocked
               ? aiWorkflowTitle
-              : aiEditEnabled
-                ? "AI編集モードを終了"
-                : anyDirty
-                  ? "保存してから AI 一発編集"
-                  : "AI 一発編集を開く"}
+              : analysisBusy
+                ? "文字起こし中です。終わると AI 編集を使えます"
+                : proj.analysisBlocked !== null
+                  ? proj.analysisBlocked
+                  : aiEditEnabled
+                    ? "AI編集モードを終了"
+                    : anyDirty
+                      ? "保存してから AI 一発編集"
+                      : "AI 一発編集を開く"}
           </TooltipContent>
         </Tooltip>
         {/* レイアウト切替(VSCode 風)。アイコンの塗られた面 = 表示中のパネル。
@@ -6119,16 +6149,6 @@ const EditorApp = () => {
             </fieldset>
           </PopoverContent>
         </Popover>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={job?.status === "running" || busy !== null}
-          title="文字起こし・無音検出・編集案をまとめて生成する"
-          onClick={() => void runInitialDraft()}
-        >
-          <Sparkles size={14} aria-hidden />
-          AI に初版を作らせる
-        </Button>
         <Popover open={exportOpen} onOpenChange={setExportOpen}>
           <PopoverTrigger asChild>
             <Button
@@ -6303,17 +6323,37 @@ const EditorApp = () => {
             <TabsContent value="playhead" className="aiScopePanel">現在の再生位置周辺を対象にします。</TabsContent>
             <TabsContent value="selection" className="aiScopePanel">現在選択している要素を対象にします。</TabsContent>
             </Tabs>
+            {transcript?.generatedBy === "transcribe" && (
+              <div className="aiCommandActions" aria-label="AI 編集のコマンド">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={analysisBusy}
+                  title={
+                    analysisBusy
+                      ? "文字起こし中です。完了後にテロップとして採用できます"
+                      : "自動解析の文字起こしをテロップとして採用する"
+                  }
+                  onClick={adoptCaptions}
+                >
+                  <Captions size={14} aria-hidden />
+                  文字起こしをテロップにする
+                </Button>
+              </div>
+            )}
             <AiCommand
-              disabled={anyDirty || aiWorkflowLocked}
+              disabled={anyDirty || aiWorkflowLocked || analysisBusy}
               busy={aiBusy}
               multiline
               modalStyle
               disabledReason={
-                anyDirty
-                  ? "保存してから AI 一発編集"
-                  : aiWorkflowLocked
-                    ? "AI 一発編集を確認中"
-                    : undefined
+                analysisBusy
+                  ? "文字起こし中です。終わると AI 編集を使えます"
+                  : anyDirty
+                    ? "保存してから AI 一発編集"
+                    : aiWorkflowLocked
+                      ? "AI 一発編集を確認中"
+                      : undefined
               }
               placeholder={
                 aiCommandScope === "global"

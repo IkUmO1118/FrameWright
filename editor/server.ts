@@ -50,12 +50,11 @@ import { classifyBrowserDisplayable } from "../src/lib/mediaCodec.ts";
 import type { DisplayVerdict, VideoCodecFacts } from "../src/lib/mediaCodec.ts";
 import { ensureIds, hasAnyId, ID_PREFIX, usedIdsOf } from "../src/lib/ids.ts";
 import { mergeBodyOverDisk } from "../src/lib/applyEdits.ts";
-import { withoutBootstrapMarker } from "../src/lib/bootstrapArtifact.ts";
+import { isBootstrapArtifact, withoutBootstrapMarker } from "../src/lib/bootstrapArtifact.ts";
 import { PROJECT_DIRECTORY_EXCLUDES } from "../src/lib/files.ts";
-import { rerunConflicts } from "../src/lib/rerunGuard.ts";
 import { bootstrapProjectWithLayout } from "../src/stages/bootstrap.ts";
+import { detect } from "../src/stages/detect.ts";
 import { ingest } from "../src/stages/ingest.ts";
-import { runDraft } from "../src/stages/runDraft.ts";
 import { deriveProject } from "../src/stages/derive.ts";
 import { listSourceCandidates } from "../src/lib/findSource.ts";
 import { isBaseLayoutPreset, isCanvasPreset, outputSize, resolveCanvas } from "../src/lib/profile.ts";
@@ -85,7 +84,7 @@ import {
   hyperframeAuthorConflict,
   validateHyperframeAuthorRequest,
 } from "../src/lib/hyperframeAuthor.ts";
-import { readEditableDocs } from "../src/stages/idStamp.ts";
+import { idStamp, readEditableDocs } from "../src/stages/idStamp.ts";
 import { aiProfileStatuses, profileForRoute, resolveAiReviewCfg, resolveAiRuntimeConfig, resolveHyperframeAssetLimits, resolvePerceptionStatus, recordingRootState, resolveRecordingRoots } from "../src/lib/config.ts";
 import type { Config, RecordingRoot } from "../src/lib/config.ts";
 import {
@@ -103,6 +102,7 @@ import type {
   AutoCuts,
   Bgm,
   CutPlan,
+  Interval,
   Manifest,
   Overlays,
   Transcript,
@@ -123,7 +123,7 @@ import type {
   ScriptData,
   ScriptSegment,
 } from "./client/apiTypes.ts";
-import { buildWords } from "../src/stages/transcribe.ts";
+import { buildWords, transcribe, TranscribeAbortedError } from "../src/stages/transcribe.ts";
 import type { WhisperToken } from "../src/stages/transcribe.ts";
 import { DEFAULT_SILENCE_CUT_REASON } from "../src/lib/buildCutplan.ts";
 import { proxyFileName } from "../src/lib/proxyCache.ts";
@@ -1166,13 +1166,27 @@ async function handle(
     sendJson(res, 200, { ok: true, path: out, proxyFile: proxyFileName(manifest) });
     return;
   }
-  if (req.method === "POST" && path === "/api/run") {
-    const body = (await readBody(req)) as { force?: unknown };
-    const force = body.force === true;
-    await runHeavyJob("run", "run", async () => {
-      await runDraft(dir, cfg, { force });
-    });
-    sendJson(res, 200, { ok: true });
+  if (req.method === "POST" && path === "/api/analyze") {
+    // 開いた瞬間の自動解析(transcribe → detect)。plan は走らせない。
+    // runHeavyJob には乗せない: 数分かかる whisper が preview / render /
+    // AI 提案を全部 409 にしてしまい、「解析中も使える」目的が壊れるため。
+    const status = analysisStatus(dir, cfg);
+    if (status.blocked !== null) throw new HttpError(400, status.blocked);
+    if (!status.needed) {
+      // 既に文字起こし済み(別経路で完了した / 二重要求)。何もせず成功で返す
+      sendJson(res, 200, { ok: true, transcriptSkipped: true, silences: currentSilences(dir) });
+      return;
+    }
+    const jobDir = dir;
+    let job = analysisJobs.get(jobDir);
+    if (!job) {
+      job = runAnalysis(jobDir, cfg).finally(() => {
+        analysisJobs.delete(jobDir);
+      });
+      analysisJobs.set(jobDir, job);
+    }
+    const result = await job;
+    sendJson(res, 200, { ok: true, ...result });
     return;
   }
   if (req.method === "POST" && (path === "/api/preview" || path === "/api/render")) {
@@ -1238,6 +1252,70 @@ async function handle(
 
 /** proxy.* の生成(数十秒かかる)の実行中プロミス。二重生成の防止用 */
 let proxyBuilding: Promise<string> | null = null;
+
+/** 解析(transcribe → detect)の進行中ジョブ。ランチャーモードでは dir ごとに分ける。 */
+const analysisJobs = new Map<string, Promise<AnalyzeResult>>();
+
+export interface AnalyzeResult {
+  /** 実行中に人間が transcript.json を編集したため、文字起こし結果を破棄したか。 */
+  transcriptSkipped: boolean;
+  /** detect が書いた cuts.auto.json の無音区間。cuts.auto.json がまだ無いときだけ null。 */
+  silences: Interval[] | null;
+}
+
+/** 開いた瞬間の自動解析が必要か、または走れないかを判定する。 */
+export function analysisStatus(
+  dir: string,
+  cfg: Config,
+): { needed: boolean; blocked: string | null } {
+  if (!existsSync(join(dir, "manifest.json"))) return { needed: false, blocked: null };
+  if (!isBootstrapArtifact(join(dir, "transcript.json"))) {
+    return { needed: false, blocked: null };
+  }
+  if (!existsSync(cfg.whisper.model)) {
+    return {
+      needed: false,
+      blocked:
+        `文字起こしモデルが見つかりません: ${cfg.whisper.model}\n` +
+        "README のセットアップ手順でダウンロードすると、次に開いたときに自動で文字起こしします",
+    };
+  }
+  return { needed: true, blocked: null };
+}
+
+/** cuts.auto.json の無音区間を読む(無ければ null)。 */
+function currentSilences(dir: string): Interval[] | null {
+  const p = join(dir, "cuts.auto.json");
+  if (!existsSync(p)) return null;
+  try {
+    return (JSON.parse(readFileSync(p, "utf8")) as AutoCuts).silences;
+  } catch {
+    return null;
+  }
+}
+
+/** 開いた瞬間の自動解析。transcribe → id-stamp → detect の順に走らせる。 */
+async function runAnalysis(dir: string, cfg: Config): Promise<AnalyzeResult> {
+  let transcriptSkipped = false;
+  try {
+    await transcribe(dir, cfg, {
+      markUnadopted: true,
+      beforeWrite: () => {
+        if (!isBootstrapArtifact(join(dir, "transcript.json"))) {
+          throw new TranscribeAbortedError(
+            "文字起こし中に transcript.json が編集されたため、結果を破棄しました",
+          );
+        }
+      },
+    });
+  } catch (err) {
+    if (!(err instanceof TranscribeAbortedError)) throw err;
+    transcriptSkipped = true;
+  }
+  idStamp(dir); // 冪等。既に id があれば何も書かない
+  const cuts = await detect(dir, cfg);
+  return { transcriptSkipped, silences: cuts.silences };
+}
 
 export interface HyperframeCardSources {
   htmlByName: Record<string, string>;
@@ -1443,7 +1521,6 @@ export function ensureHyperframeAuthorNameAvailable(dir: string, name: string): 
 }
 
 export type HeavyJobStage =
-  | "run"
   | "preview"
   | "render"
   | "review"
@@ -1469,9 +1546,7 @@ const proposalStore = new Map<string, StoredProposal>();
 
 /** ジョブ名の日本語表記(409 メッセージ用) */
 const jaStage = (s: HeavyJobStage): string =>
-  s === "run"
-    ? "AI初版生成"
-    : s === "render"
+  s === "render"
     ? "レンダー"
     : s === "hyperframe-author"
       ? "AI素材の生成"
@@ -1886,6 +1961,7 @@ export function loadProject(dir: string, cfg: Config): ProjectData {
   } catch {
     proxyStale = true;
   }
+  const analysis = analysisStatus(dir, cfg);
   return {
     state: "ready",
     dir,
@@ -1894,7 +1970,6 @@ export function loadProject(dir: string, cfg: Config): ProjectData {
     cutplan,
     overlays: readJson<Overlays>("overlays.json", {}),
     contentHashes: contentHashesOf(dir),
-    runNeedsForce: rerunConflicts(dir, ["transcript.json", "cutplan.json", "chapters.json", "meta.json"]).length > 0,
     dirFiles,
     bgm: readJson<Bgm | null>("bgm.json", null),
     bgmFile: findBgm(dir),
@@ -1903,6 +1978,8 @@ export function loadProject(dir: string, cfg: Config): ProjectData {
     proxyFile,
     proxyExists,
     proxyStale,
+    analysisNeeded: analysis.needed,
+    analysisBlocked: analysis.blocked,
     renderCfg: designRenderCfg,
     ...editorDesignAssets(dir, cfg, manifest, designRenderCfg),
     previewCfg: { width: cfg.preview.width, videoEncoder: cfg.preview.videoEncoder, engine: cfg.preview.engine },

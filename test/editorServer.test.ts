@@ -11,6 +11,7 @@ import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  analysisStatus,
   buildAiReviewCandidateFromStoredProposal,
   buildHyperframeCards,
   loadProject,
@@ -44,7 +45,6 @@ test("saveHeavyJobDecision: review だけ中止して保存を通す", () => {
   assert.equal(saveHeavyJobDecision(null), "allow");
   assert.equal(saveHeavyJobDecision("review"), "cancel");
   for (const stage of [
-    "run",
     "preview",
     "render",
     "propose",
@@ -53,6 +53,34 @@ test("saveHeavyJobDecision: review だけ中止して保存を通す", () => {
   ] as const) {
     assert.equal(saveHeavyJobDecision(stage), "reject", stage);
   }
+});
+
+test("analysisStatus: bootstrap の transcript だけを解析対象にする", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fw-analyze-"));
+  const cfg = { whisper: { model: join(dir, "model.bin") } } as unknown as Config;
+  writeFileSync(join(dir, "model.bin"), "x");
+
+  assert.deepEqual(analysisStatus(dir, cfg), { needed: false, blocked: null });
+
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ durationSec: 10 }));
+  writeFileSync(join(dir, "transcript.json"), JSON.stringify({ generatedBy: "bootstrap", segments: [] }));
+  assert.equal(analysisStatus(dir, cfg).needed, true);
+
+  writeFileSync(join(dir, "transcript.json"), JSON.stringify({ language: "ja", model: "m", segments: [] }));
+  assert.equal(analysisStatus(dir, cfg).needed, false);
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("analysisStatus: whisper モデルが無ければ needed=false で理由を返す", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fw-analyze-"));
+  const cfg = { whisper: { model: join(dir, "missing.bin") } } as unknown as Config;
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ durationSec: 10 }));
+  writeFileSync(join(dir, "transcript.json"), JSON.stringify({ generatedBy: "bootstrap", segments: [] }));
+  const status = analysisStatus(dir, cfg);
+  assert.equal(status.needed, false);
+  assert.match(status.blocked ?? "", /文字起こしモデルが見つかりません/);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 const authorProfile = (overrides: Partial<AiProfileStatus> = {}): AiProfileStatus => ({

@@ -115,6 +115,10 @@ export interface ReadyProjectData {
    * エンコーダ)か元収録ファイルと食い違っている(古い)か。proxyExists が
    * false のときは常に false(未生成であって陳腐化ではない) */
   proxyStale: boolean;
+  /** 開いた瞬間の自動解析(transcribe → detect)が必要か。 */
+  analysisNeeded: boolean;
+  /** 自動解析が走れない理由(whisper モデル不在など)。null なら障害なし。 */
+  analysisBlocked: string | null;
   renderCfg: Config["render"];
   /** server が現在の design key と全 PNG の存在を検証した静的資産 */
   designAssets?: PreparedDesignAssets;
@@ -142,8 +146,6 @@ export interface ReadyProjectData {
    *  client は不透明 token として保持し save 時に baseHashes として echo する
    *  (再計算はしない)。 */
   contentHashes: Record<string, string>;
-  /** AI 初版生成が手編集を上書きするため確認と backups 退避を要するか。 */
-  runNeedsForce: boolean;
 }
 
 export type ProjectData = EmptyProjectData | ReadyProjectData;
@@ -237,6 +239,14 @@ export interface ProxyResponse {
   ok: true;
   path: string;
   proxyFile: ReadyProjectData["proxyFile"];
+}
+
+export interface AnalyzeResponse {
+  ok: true;
+  /** 実行中に人間が transcript.json を編集したため文字起こし結果を破棄した。 */
+  transcriptSkipped: boolean;
+  /** detect が書いた無音区間。ProjectReady.silences をこれで置き換える。 */
+  silences: Interval[] | null;
 }
 
 /** POST /api/draft のボディ = .editor-draft.json の中身。未保存の編集を
