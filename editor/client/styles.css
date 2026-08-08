@@ -5598,17 +5598,6 @@
   font-size: 0.66rem;
 }
 
-.ocAiCommandModal .aiCommandActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  margin-block: 0.2rem 0.75rem;
-}
-
-.ocAiCommandModal .aiCommandActions button {
-  gap: 0.4rem;
-}
-
 .ocAiCommandModal > .hint {
   color: hsl(var(--oc-muted-foreground));
   font-size: var(--oc-text-xs);

@@ -9,6 +9,7 @@ import { ID_RE } from "../src/lib/ids.ts";
 const root = join(import.meta.dirname, "..");
 const server = readFileSync(join(root, "editor/server.ts"), "utf8");
 const app = readFileSync(join(root, "editor/client/App.tsx"), "utf8");
+const panels = readFileSync(join(root, "editor/client/Panels.tsx"), "utf8");
 const widgets = readFileSync(join(root, "editor/client/widgets.tsx"), "utf8");
 const apiTypes = readFileSync(join(root, "editor/client/apiTypes.ts"), "utf8");
 const transcribeSrc = readFileSync(join(root, "src/stages/transcribe.ts"), "utf8");
@@ -79,12 +80,19 @@ test("editor analyze: 自動文字起こしは未採用マーカーを付け、C
   );
 });
 
-test("editor analyze: AI 編集モーダルに文字起こし採用コマンドを持つ", () => {
+test("caption adoption: テロップタブが未採用案内と採用ボタンを持ち、AI モーダルには置かない", () => {
   assert.match(app, /const adoptCaptions = \(\) => \{/);
   assert.match(app, /transcript\.generatedBy !== "transcribe"/);
   assert.match(app, /delete next\.generatedBy/);
-  assert.match(app, /文字起こしをテロップにする/);
-  assert.match(app, /disabled=\{analysisBusy\}/);
+  assert.match(app, /captionSegments=\{captionSegments\}/);
+  assert.match(app, /captionsAdoptable=\{transcript\.generatedBy === "transcribe"\}/);
+  assert.match(app, /onAdoptCaptions=\{adoptCaptions\}/);
+  assert.match(panels, /captionSegments: Transcript\["segments"\]/);
+  assert.match(panels, /if \(captionsAdoptable\)/);
+  assert.match(panels, /文字起こしは終わっています。/);
+  assert.match(panels, /文字起こしをテロップにする/);
+  assert.match(panels, /disabled=\{captionsAdoptionDisabled\}/);
+  assert.doesNotMatch(app, /aiCommandActions/);
 });
 
 test("editor analyze: 「AI に初版を作らせる」は削除済み", () => {

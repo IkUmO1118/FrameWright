@@ -6323,24 +6323,6 @@ const EditorApp = () => {
             <TabsContent value="playhead" className="aiScopePanel">現在の再生位置周辺を対象にします。</TabsContent>
             <TabsContent value="selection" className="aiScopePanel">現在選択している要素を対象にします。</TabsContent>
             </Tabs>
-            {transcript?.generatedBy === "transcribe" && (
-              <div className="aiCommandActions" aria-label="AI 編集のコマンド">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={analysisBusy}
-                  title={
-                    analysisBusy
-                      ? "文字起こし中です。完了後にテロップとして採用できます"
-                      : "自動解析の文字起こしをテロップとして採用する"
-                  }
-                  onClick={adoptCaptions}
-                >
-                  <Captions size={14} aria-hidden />
-                  文字起こしをテロップにする
-                </Button>
-              </div>
-            )}
             <AiCommand
               disabled={anyDirty || aiWorkflowLocked || analysisBusy}
               busy={aiBusy}
@@ -6562,21 +6544,26 @@ const EditorApp = () => {
               <>
                 <PanelHeader
                   title="テロップ"
-                  actions={(
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="ocMaterialImport"
-                      onClick={() => addAtPlayhead("caption")}
-                    >
-                      <Plus size={13} strokeWidth={1.75} aria-hidden />
-                      追加
-                    </Button>
-                  )}
+                  actions={transcript.generatedBy === "transcribe"
+                    ? null
+                    : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="ocMaterialImport"
+                        onClick={() => addAtPlayhead("caption")}
+                      >
+                        <Plus size={13} strokeWidth={1.75} aria-hidden />
+                        追加
+                      </Button>
+                    )}
                 />
                 <CaptionsPanel
-                  transcript={transcript}
+                  captionSegments={captionSegments}
                   overlays={overlays}
+                  captionsAdoptable={transcript.generatedBy === "transcribe"}
+                  captionsAdoptionDisabled={analysisBusy}
+                  onAdoptCaptions={adoptCaptions}
                   selectedIndex={selection?.kind === "caption" ? selection.index : null}
                   multiSelected={capMulti}
                   onRowClick={(i) => selectCaption(i, true)}
