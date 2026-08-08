@@ -1,16 +1,18 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { completeWithJsonSchema } from "../lib/llm.ts";
 import type { JsonSchemaTextFormat } from "../lib/llm.ts";
 import { mergeBodyOverDisk, planApply } from "../lib/applyEdits.ts";
 import type { ApplyPlan } from "../lib/applyEdits.ts";
+import { normalizeCutplanSegments } from "../lib/docDiff.ts";
 import type { ReviewDocs } from "../lib/docDiff.ts";
 import type { Config } from "../lib/config.ts";
 import { outputSize } from "../lib/profile.ts";
 import { sliceReviewContext, type ReviewFrameRequest, type ReviewRange } from "../lib/review.ts";
 import type { EditorAiReviewPlan } from "../lib/editorAiReview.ts";
 import { describeJson } from "./describe.ts";
+import { validateDocs } from "./validate.ts";
 import type { DescribeProjection, CaptionEntry, MappedInterval } from "./describe.ts";
 import type { ApplyBody, ApplyPatch, Bgm, CutPlan, Manifest, Overlays, Region, Transcript } from "../types.ts";
 import { planIntentEdits, type EditIntent } from "../lib/editIntent.ts";
@@ -368,9 +370,18 @@ function normalizeOverlaysDoc(value: Overlays | undefined, bounds: Region): Over
   };
 }
 
+/**
+ * cutplan.segments の時系列正規化。実体は `src/lib/docDiff.ts`(クライアントの
+ * hunk マージも同じ関数を使う。AI は cutplan を全置換で再構成するため配列順を
+ * 崩すことがあり、とくに plan を通していない bootstrap の「全編 keep」から
+ * 作らせたときに出る)。
+ */
+export const normalizeCutplanDoc = normalizeCutplanSegments;
+
 function normalizeAiApplyBody(body: ApplyBody, bounds: Region): ApplyBody {
   return {
     ...body,
+    ...(body.cutplan ? { cutplan: normalizeCutplanDoc(body.cutplan) } : {}),
     ...(body.transcript ? { transcript: normalizeTranscriptDoc(body.transcript, bounds) } : {}),
     ...(body.overlays ? { overlays: normalizeOverlaysDoc(body.overlays, bounds) } : {}),
   };
@@ -918,19 +929,28 @@ export function buildEditorAiPrompt(
         limit: 5,
       })
     : [];
+  const captionAdoptionRules = transcriptIsUnadopted(dir)
+    ? [
+        "",
+        "Caption adoption requirement:",
+        "- Captions are not enabled yet for this project. Do NOT edit `transcript`.",
+        "  If the user asks for captions, say they must first enable captions in the caption tab.",
+      ]
+    : [];
+  const patchOnlyRules = options.patchOnly
+    ? [
+        "",
+        "Patch-only requirement:",
+        "- Return `edit.mode: \"patch\"` only. Do not return `edit.mode: \"tasks\"`.",
+        "- For this request, generate concrete `ops` or `replace` edits directly.",
+        "- For existing item edits, `set` and item `remove` targets must be stable ids like `@cap_xxxxxx`, `@mat_xxxxxx`, `@ins_xxxxxx`, `@bl_xxxxxx`, or `@ann_xxxxxx`.",
+        "- Collection selectors such as `overlays.overlays`, `overlays.inserts`, and `overlays.annotations` are valid only for `add` ops or for clearing the whole collection with `remove`.",
+        `- Reason: ${options.patchOnlyReason ?? "annotation edits must bypass intent compilation"}`,
+      ]
+    : [];
   return template
     .replace("{{outputSchema}}", editorAiOutputSchemaText())
-    .replace("{{patchOnlyRules}}", options.patchOnly
-      ? [
-          "",
-          "Patch-only requirement:",
-          "- Return `edit.mode: \"patch\"` only. Do not return `edit.mode: \"tasks\"`.",
-          "- For this request, generate concrete `ops` or `replace` edits directly.",
-          "- For existing item edits, `set` and item `remove` targets must be stable ids like `@cap_xxxxxx`, `@mat_xxxxxx`, `@ins_xxxxxx`, `@bl_xxxxxx`, or `@ann_xxxxxx`.",
-          "- Collection selectors such as `overlays.overlays`, `overlays.inserts`, and `overlays.annotations` are valid only for `add` ops or for clearing the whole collection with `remove`.",
-          `- Reason: ${options.patchOnlyReason ?? "annotation edits must bypass intent compilation"}`,
-        ].join("\n")
-      : "")
+    .replace("{{patchOnlyRules}}", [...captionAdoptionRules, ...patchOnlyRules].join("\n"))
     .replace("{{instruction}}", req.instruction.trim())
     .replace("{{selectionContext}}", JSON.stringify(selectionContext, null, 2))
     .replace("{{projectJson}}", JSON.stringify(projectProjection, null, 2))
@@ -1032,6 +1052,65 @@ export function buildRefineEditorAiPrompt(
   ].join("\n");
 }
 
+/**
+ * 提案の適用結果(ディスク + パッチのマージ)を validate に通し、AI が
+ * 触ったファイルにエラーがあれば提案そのものを拒む。
+ *
+ * 正規化(normalizeCutplanDoc 等)で直せるのは既知の1パターンだけで、keep の
+ * 重なり・keep ゼロ・尺超過などは AI にしか直せない。ここで止めずに通すと、
+ * クライアントが差分レビューまで進んだあと保存(saveProject → validateDocs)で
+ * 初めて弾かれ、提案を作り直すしかなくなる。
+ *
+ * エラーの対象は applyPlan が実際に書き換えるファイルだけに絞る。収録に元から
+ * ある無関係な validate エラー(AI が触っていないファイル)で AI 編集が
+ * 一切使えなくなるのを避けるため。
+ */
+function assertProposalValidates(
+  dir: string,
+  merged: ReturnType<typeof mergeBodyOverDisk>,
+  changedFiles: string[],
+): void {
+  const { errors } = validateDocs(dir, merged);
+  const blocking = errors.filter((e) => changedFiles.includes(e.file));
+  if (blocking.length === 0) return;
+  const detail = blocking.map((e) => `${e.file} ${e.where}: ${e.message}`).join(" / ");
+  throw new EditorAiError(400, `AI 提案が検査に通りません: ${detail}`);
+}
+
+function transcriptIsUnadopted(dir: string): boolean {
+  const p = join(dir, "transcript.json");
+  if (!existsSync(p)) return false;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return false; // 壊れた JSON は validate 側の責務
+  }
+  return isObj(doc) && doc.generatedBy === "transcribe";
+}
+
+/**
+ * 未採用の transcript(generatedBy: "transcribe")を AI に書き換えさせない。
+ *
+ * 採用は文書単位なので、AI が transcript を触ると保存時にマーカーが外れ、
+ * AI が触っていないセグメントまで一斉にテロップとして出現する。1箇所の
+ * 指示で全編に字幕が載るのは元設計 §13 が消した体験そのものなので、
+ * 提案の時点で止めて二段階を明示する。
+ *
+ * 止めるのは transcript への書き込みだけ。AI は未採用でも transcript を
+ * 読んで(知覚)カット判断ができるので、「冗長な部分を削って」は通る。
+ */
+function assertCaptionsAdopted(dir: string, changedFiles: string[]): void {
+  if (!changedFiles.includes("transcript.json")) return;
+  if (!transcriptIsUnadopted(dir)) return;
+  throw new EditorAiError(
+    400,
+    "テロップはまだ有効になっていません。" +
+      "左パネルのテロップタブで「文字起こしをテロップにする」を押してから、" +
+      "テロップの編集を指示してください",
+  );
+}
+
 export function planEditorAiPatch(
   dir: string,
   parsed: ParsedAiPatchResponse,
@@ -1047,7 +1126,10 @@ export function planEditorAiPatch(
       if (unsupported.length > 0) {
         throw new EditorAiError(400, `GUI 提案では編集できないファイルです: ${unsupported.join(", ")}`);
       }
-      const proposedDocs = reviewDocsOf(mergeBodyOverDisk(dir, normalizedApplyPlan.body));
+      const mergedDocs = mergeBodyOverDisk(dir, normalizedApplyPlan.body);
+      assertCaptionsAdopted(dir, normalizedApplyPlan.changedFiles);
+      assertProposalValidates(dir, mergedDocs, normalizedApplyPlan.changedFiles);
+      const proposedDocs = reviewDocsOf(mergedDocs);
       return {
         title: parsed.title,
         summary: parsed.summary,
@@ -1071,7 +1153,10 @@ export function planEditorAiPatch(
   if (unsupported.length > 0) {
     throw new EditorAiError(400, `GUI 提案では編集できないファイルです: ${unsupported.join(", ")}`);
   }
-  const proposedDocs = reviewDocsOf(mergeBodyOverDisk(dir, applyPlan.body));
+  const mergedDocs = mergeBodyOverDisk(dir, applyPlan.body);
+  assertCaptionsAdopted(dir, applyPlan.changedFiles);
+  assertProposalValidates(dir, mergedDocs, applyPlan.changedFiles);
+  const proposedDocs = reviewDocsOf(mergedDocs);
   return {
     title: parsed.title,
     summary: parsed.summary,

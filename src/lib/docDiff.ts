@@ -385,5 +385,26 @@ export function applyProposalResolution(
     if (side === "theirs") applyHunkValue(merged, hunk, hunk.theirs);
   }
   restoreApprovalsFrom(base, merged);
+  // hunk 単位の適用は「配列の同じ添字を差し替える」ので、採用/不採用の
+  // 組み合わせ次第で cutplan.segments の時系列順が崩れる(提案側が昇順でも、
+  // base 側の要素と混ざると逆転しうる)。keep の時系列順は validate の必須
+  // 不変条件なので、マージの出口で必ず直す(§validate「keep 区間が時系列順
+  // ではありません」)
+  if (merged.cutplan) merged.cutplan = normalizeCutplanSegments(merged.cutplan);
   return merged;
+}
+
+/**
+ * cutplan.segments を start 昇順へ正規化する。
+ *
+ * 並べ替えは意味を変えない: validate が keep の時系列順を要求している以上、
+ * 配列順は時刻以上の情報を持たない。同じ start の要素は元の相対順を保つ
+ * (Array#sort は安定)。既に昇順なら同一参照を返す(バイト等価)。
+ */
+export function normalizeCutplanSegments(cutplan: CutPlan): CutPlan {
+  const segments = cutplan.segments;
+  if (!Array.isArray(segments)) return cutplan;
+  const ordered = segments.every((s, i) => i === 0 || s.start >= segments[i - 1].start);
+  if (ordered) return cutplan;
+  return { ...cutplan, segments: [...segments].sort((a, b) => a.start - b.start) };
 }
