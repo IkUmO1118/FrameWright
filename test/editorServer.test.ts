@@ -441,6 +441,7 @@ test("loadProject: /api/project 相当の payload に planPerception を含む",
       ocrMaxSegments: 40,
       ocrMaxLines: 6,
       systemSpeech: false,
+      cursor: false,
       warnings: [],
     });
   } finally {

@@ -438,6 +438,15 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
   非対応環境は警告のうえ自動で劣化)を添えられる。詳細は docs/usage.md
   「plan の知覚(config.yaml の plan.perception)」参照
 - 同じく `plan` / `plan --cuts-only` には、`config.yaml` の
+  `plan.perception.cursor`(既定オフ。書かない限り LLM 入力はバイト等価)で
+  カーソル操作(クリック回数・停留(dwell)回数と最長秒・静止比率・待機
+  カーソル比率)を各区間へ添えられる。`record --watch` が書く
+  `<recording base>.cursor.json` サイドカーだけから計算する決定論(新規計測
+  なし)。サイドカー不在は警告なしで注入をスキップする(opt-in の収録方式
+  なので不在は異常ではない)。**`remeta` には配線しない**(カーソル操作は
+  章立て・タイトル・概要欄の判断材料にならないため)。詳細は
+  docs/guides/cut-planning.md「plan の知覚」参照
+- 同じく `plan` / `plan --cuts-only` には、`config.yaml` の
   `plan.styleProfile`(既定オフ。書かない限り LLM 入力・`plan.raw.txt` は
   この機能導入前とバイト等価)で `style-profile` が抽出した style profile
   (`style.probe/<name>.json`)を**候補選択のソフトな prior**として添えられる

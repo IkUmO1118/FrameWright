@@ -45,11 +45,13 @@ import type {
 } from "../lib/planLoop.ts";
 import {
   computeAudioFeatures,
+  computeCursorFeatures,
   computeSegmentOcr,
   computeSystemSpeech,
   loadSystemTranscript,
   renderPerceptionBlock,
 } from "../lib/perception.ts";
+import { readCursorSidecar } from "./planEffects.ts";
 import type { Config } from "../lib/config.ts";
 import { captionTrack } from "../types.ts";
 import { frames } from "./frames.ts";
@@ -342,19 +344,20 @@ export async function plan(
   const templateFile = opts.cutsOnly ? "plan-cuts.md" : "plan.md";
   const pc = resolvePerceptionCfg(cfg);
   const audio = pc.audio ? computeAudioFeatures(numbered, auto.silences) : null;
-  // ocr 経路のみ manifest.json を読む(audio だけなら manifest は不要)。
+  // ocr/cursor 経路のみ manifest.json を読む(audio だけなら manifest は不要)。
   // stills は映像ストリームを持たないため ffmpeg の静止画抽出を試みない。
+  let manifestForPerception: Manifest | null = null;
   let ocr: Awaited<ReturnType<typeof computeSegmentOcr>> | null = null;
   if (pc.ocr) {
-    const manifest = readStageJson<Manifest>(join(dir, "manifest.json"), "ingest");
-    if (manifest.layout === "stills") {
+    manifestForPerception ??= readStageJson<Manifest>(join(dir, "manifest.json"), "ingest");
+    if (manifestForPerception.layout === "stills") {
       console.warn(
         '警告: 映像なしプロジェクト(layout:"stills")のため plan.perception.ocr はスキップします',
       );
     } else {
       ocr = await computeSegmentOcr(
         dir,
-        manifest,
+        manifestForPerception,
         numbered,
         { ocrMaxSegments: pc.ocrMaxSegments, ocrMaxLines: pc.ocrMaxLines, languages: cfg.ocr?.languages },
         (msg) => console.warn(`警告: ${msg}`),
@@ -365,7 +368,23 @@ export async function plan(
   // systemSpeech オフ or ファイル不在なら null=従来出力とバイト等価
   const sysT = pc.systemSpeech ? loadSystemTranscript(dir) : null;
   const system = sysT ? computeSystemSpeech(numbered, sysT.segments) : null;
-  const perception = renderPerceptionBlock(audio, system, ocr);
+  // カーソル操作(video-perception-P3)。cursor オフなら fs を一切触らず
+  // null=従来出力とバイト等価(§2.5)。サイドカー不在は異常ではないので
+  // 警告は出さないが、cursor:true なのに不在のときだけ情報ログを1行出す(§2.6)。
+  // remeta には配線しない(§2.5。docs/decisions.md 参照)
+  let cursor: ReturnType<typeof computeCursorFeatures> | null = null;
+  if (pc.cursor) {
+    manifestForPerception ??= readStageJson<Manifest>(join(dir, "manifest.json"), "ingest");
+    const sidecar = readCursorSidecar(dir, manifestForPerception);
+    if (sidecar) {
+      cursor = computeCursorFeatures(numbered, sidecar.samples, pc.cursorOptions);
+    } else {
+      console.log(
+        "plan.perception.cursor は有効ですが cursor サイドカー(<recording base>.cursor.json)が見つからないため注入をスキップします",
+      );
+    }
+  }
+  const perception = renderPerceptionBlock(audio, system, ocr, cursor);
   const completeFn = deps.complete ?? completeStructuredPlan;
 
   // SD-T4(既定 off): enabled のときだけ channel の style profile を読み、

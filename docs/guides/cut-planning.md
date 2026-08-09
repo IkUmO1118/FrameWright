@@ -60,6 +60,7 @@ plan:
     ocrMaxSegments: 40
     ocrMaxLines: 6
     systemSpeech: false # システム音声の発話(要 whisper.systemAudio。下記参照)
+    cursor: false       # カーソル操作(クリック/停留/待機カーソル比率。要 record --watch)
 ```
 
 - `audio`: 各区間の `尺` / `直前カット`(直前に落ちた素材秒)/ `内無音`(区間内に
@@ -74,10 +75,10 @@ plan:
   優先)・`ocrMaxLines`(区間ごとにプロンプトへ載せる行数の上限。既定6)で
   コストを抑える
 - `plan` / `remeta` / `run` は実行前に今回の知覚状態を必ず表示する。
-  例: `plan 知覚: audio=on / ocr=on(max 40 segments, 6 lines) / systemSpeech=off`
+  例: `plan 知覚: audio=on / ocr=on(max 40 segments, 6 lines) / systemSpeech=off / cursor=off`
 - `plan.perception` 未指定時は
   `警告: plan.perception が config.yaml にありません。...` を先に出し、
-  `audio=off / ocr=off / systemSpeech=off` と表示して継続する
+  `audio=off / ocr=off / systemSpeech=off / cursor=off` と表示して継続する
 - どちらも LLM に算術はさせない(値はこちらで丸めて記述文として渡し、番号選択
   だけをさせる)
 - 画像(スクリーンショット)そのものを LLM に渡すマルチモーダル入力は
@@ -87,6 +88,18 @@ plan:
 - `systemSpeech`: システム音声(デモ音・再生動画・TTS)の発話を各区間へ添える。
   `whisper.systemAudio: true`(下記)で `transcript.system.json` を先に作っておく
   必要があり、無ければ自動で省略(劣化)する
+- `cursor`: 各区間のカーソル操作(クリック回数・停留(dwell)回数と最長秒・静止
+  比率・待機カーソル比率)を記述文にして添える。`record --watch` が書く
+  `<recording base>.cursor.json` サイドカーだけから計算する純関数(新規計測は
+  しない)。サイドカー不在は異常ではないので警告は出さず注入をスキップするが、
+  `cursor: true` なのに不在のときだけ情報ログを1行出す。`cursorDwell`
+  (`minDwellMs`/`moveThreshold`。既定 600ms/0.02)・`cursorWaitTypes`
+  (待機系 `cursorType` の完全一致リスト。既定 `["wait", "busybutclickable"]`)
+  で調整できる。演出用の `plan.cursor`(ズーム候補の閾値)とは別軸(演出は
+  長い/密集した停留を間引くが、知覚では全 dwell を数えたい)なので値も独立
+  している。`plan` / `plan --cuts-only` にのみ配線され、`remeta`(章立て・
+  タイトル・概要欄の生成)には配線されない(カーソル操作は判断材料にならない
+  ため。`docs/decisions.md` 参照)
 
 
 ## plan の候補格子を語境界で細分化する(config.yaml の candidates。既定オフ)

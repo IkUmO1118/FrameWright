@@ -15,6 +15,7 @@ import {
   DEFAULT_HYPERFRAME_ASSET_MAX_BYTES,
   DEFAULT_HYPERFRAME_ASSET_MAX_TOTAL_BYTES,
 } from "./hyperframeAssets.ts";
+import type { PerceptionCursorOptions } from "./perception.ts";
 
 export type AiProvider = "claude-code" | "codex" | "anthropic" | "openai";
 export type LegacyLlmBackend = "claude-cli" | "api";
@@ -276,6 +277,23 @@ export interface Config {
        *  plan の知覚ブロックに添える。省略時 false。transcript.system.json が
        *  無ければ(= whisper.systemAudio 未使用)自動で劣化=ブロック省略 */
       systemSpeech?: boolean;
+      /** カーソル操作(クリック回数・停留・待機カーソル比率)を各区間へ添える。
+       *  省略時 false(バイト等価)。`<recording base>.cursor.json` サイドカー
+       *  (record --watch。D1)が無ければ警告なしで注入をスキップする(opt-in の
+       *  収録方式なので不在は異常ではない)。
+       *  §docs/plans/2026-08-10-video-perception-p3-cursor-perception-design.md */
+      cursor?: boolean;
+      /** 知覚用の dwell 閾値。`plan.cursor`(演出用のズーム閾値)とは別軸
+       *  (演出は長い停留・密集した停留を間引くが、知覚は全 dwell を数えたい)。
+       *  省略時 DEFAULT_PERCEPTION_CURSOR_MIN_DWELL_MS(600) /
+       *  DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD(0.02) */
+      cursorDwell?: {
+        minDwellMs?: number;
+        moveThreshold?: number;
+      };
+      /** 待機系とみなす cursorType の完全一致リスト。省略時
+       *  DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES(["wait", "busybutclickable"]) */
+      cursorWaitTypes?: string[];
     };
     /** plan --cuts-only のカット判断を「生成→観測→再調整」の有限反復にする
      * opt-in 設定。省略時は maxIterations=0 と同義で、従来の1ショットと
@@ -849,6 +867,16 @@ export const DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS = 40;
 /** plan.perception.ocrMaxLines 未指定時の既定(行数) */
 export const DEFAULT_PERCEPTION_OCR_MAX_LINES = 6;
 
+/** plan.perception.cursorDwell.minDwellMs 未指定時の既定(ms)。
+ *  `plan.cursor.minDwellMs`(演出用。既定450)とは別軸なので値も独立(§2.4) */
+export const DEFAULT_PERCEPTION_CURSOR_MIN_DWELL_MS = 600;
+
+/** plan.perception.cursorDwell.moveThreshold 未指定時の既定(正規化座標) */
+export const DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD = 0.02;
+
+/** plan.perception.cursorWaitTypes 未指定時の既定(cursorType の完全一致リスト) */
+export const DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES = ["wait", "busybutclickable"];
+
 /** candidates.* 未指定時の既定値。§docs/plans/2026-07-11-c1-word-candidate-grid-design.md */
 export const DEFAULT_CANDIDATES_SPLIT_ONLY_LONGER_THAN_SEC = 6;
 export const DEFAULT_CANDIDATES_MIN_SPLIT_GAP_SEC = 0.3;
@@ -1160,6 +1188,8 @@ export function resolvePerceptionCfg(cfg: Config): {
   ocrMaxSegments: number;
   ocrMaxLines: number;
   systemSpeech: boolean;
+  cursor: boolean;
+  cursorOptions: PerceptionCursorOptions;
 } {
   const p = cfg.plan?.perception ?? {};
   return {
@@ -1168,6 +1198,12 @@ export function resolvePerceptionCfg(cfg: Config): {
     ocrMaxSegments: p.ocrMaxSegments ?? DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS,
     ocrMaxLines: p.ocrMaxLines ?? DEFAULT_PERCEPTION_OCR_MAX_LINES,
     systemSpeech: p.systemSpeech ?? false,
+    cursor: p.cursor ?? false,
+    cursorOptions: {
+      minDwellMs: p.cursorDwell?.minDwellMs ?? DEFAULT_PERCEPTION_CURSOR_MIN_DWELL_MS,
+      moveThreshold: p.cursorDwell?.moveThreshold ?? DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD,
+      waitTypes: p.cursorWaitTypes ?? DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES,
+    },
   };
 }
 
@@ -1176,6 +1212,7 @@ export interface PerceptionStatus {
   audio: boolean;
   ocr: boolean;
   systemSpeech: boolean;
+  cursor: boolean;
   ocrMaxSegments: number;
   ocrMaxLines: number;
   warnings: string[];
@@ -1187,10 +1224,19 @@ export function resolvePerceptionStatus(cfg: Config): PerceptionStatus {
   const warnings: string[] = [];
   if (!explicit) {
     warnings.push(
-      "plan.perception が config.yaml にありません。plan の知覚(audio/ocr/systemSpeech)は全てオフです。",
+      "plan.perception が config.yaml にありません。plan の知覚(audio/ocr/systemSpeech/cursor)は全てオフです。",
     );
   }
-  return { explicit, ...pc, warnings };
+  return {
+    explicit,
+    audio: pc.audio,
+    ocr: pc.ocr,
+    systemSpeech: pc.systemSpeech,
+    cursor: pc.cursor,
+    ocrMaxSegments: pc.ocrMaxSegments,
+    ocrMaxLines: pc.ocrMaxLines,
+    warnings,
+  };
 }
 
 export function formatPerceptionStatusLines(status: PerceptionStatus): string[] {
@@ -1202,7 +1248,8 @@ export function formatPerceptionStatusLines(status: PerceptionStatus): string[] 
           ? `on(max ${status.ocrMaxSegments} segments, ${status.ocrMaxLines} lines)`
           : "off"
       } / ` +
-      `systemSpeech=${status.systemSpeech ? "on" : "off"}`,
+      `systemSpeech=${status.systemSpeech ? "on" : "off"} / ` +
+      `cursor=${status.cursor ? "on" : "off"}`,
   ];
 }
 

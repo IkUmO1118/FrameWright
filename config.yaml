@@ -383,6 +383,12 @@ plan:
     ocrMaxSegments: 40
     ocrMaxLines: 6
     systemSpeech: false # システム音声の発話を plan に添える(要 whisper.systemAudio)
+    cursor: false # カーソル操作(クリック/停留/待機カーソル比率)を plan に添える。
+    #   要 record --watch の cursor サイドカー(無ければ警告なしでスキップ)
+    # cursorDwell:            # 知覚用の dwell 閾値(演出用の plan.cursor とは別軸)
+    #   minDwellMs: 600
+    #   moveThreshold: 0.02
+    # cursorWaitTypes: ["wait", "busybutclickable"]   # 待機系 cursorType(完全一致)
   # plan --cuts-only の観測→再調整ループ。省略/0/1 は従来の1ショット。
   # targetOutDurationSec は単発 plan にも surface される(設定するとプロンプトに
   # 「目標の出力尺」行が1行足される。ループが無効でも読まれる)
