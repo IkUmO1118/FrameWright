@@ -232,6 +232,8 @@ import {
   deleteMaterial,
   fmtTime,
   parseTimecode,
+  getActiveJob,
+  getJob,
   getMediaFacts,
   getHyperframes,
   getPeaks,
@@ -1468,7 +1470,17 @@ const EditorApp = () => {
         connectionToastRef.current = null;
       }
     };
-    es.onmessage = () => {
+    es.onmessage = (ev) => {
+      let payload: { files?: string[]; job?: RenderJob | null } = {};
+      try {
+        payload = JSON.parse(ev.data) as typeof payload;
+      } catch {
+        payload = {};
+      }
+      if ("job" in payload) {
+        applyJobUpdate(payload.job ?? null);
+        return;
+      }
       if (dirtyRef.current) void reviewExternalRef.current();
       else void reloadRef.current();
     };
@@ -1482,7 +1494,30 @@ const EditorApp = () => {
       }
     };
     return () => es.close();
-  }, [addToast, dismissToast]);
+  }, [addToast, applyJobUpdate, dismissToast]);
+
+  useEffect(() => {
+    if (!proj) return;
+    void getActiveJob().then(({ job }) => {
+      if (job) applyJobUpdate(job);
+    }).catch(() => {});
+  }, [applyJobUpdate, proj?.dir]);
+
+  useEffect(() => {
+    if (job?.status !== "running") return;
+    const timer = setInterval(() => {
+      const current = jobToastRef.current;
+      const request = current ? getJob(current.jobId) : getActiveJob();
+      void request
+        .then(({ job }) => applyJobUpdate(job))
+        .catch((e: unknown) => {
+          // 404 = サーバー再起動などで registry が消えた。running を復元した
+          // ふりをせず、進捗トーストを畳んで idle へ戻す。
+          if (e instanceof ApiError && e.status === 404) applyJobUpdate(null);
+        });
+    }, JOB_RESYNC_MS);
+    return () => clearInterval(timer);
+  }, [applyJobUpdate, job?.status]);
 
   // error が立ったらエラートーストを出す。表示は TOAST_TTL_MS.error で自動消滅する
   // (×を押さなくても消える)。error state 自体は起動失敗の全画面(!proj)とプロキシ
