@@ -234,6 +234,8 @@ export const Timeline = ({
   multiCaption,
   onToggleCaptionSel,
   onSeek,
+  onScrubMove,
+  onScrubEnd,
   onSelect,
   onSelectTrackHeader,
   onDragStart,
@@ -296,6 +298,10 @@ export const Timeline = ({
   /** テロップクリップの⌘クリック(選択への追加/解除) */
   onToggleCaptionSel: (index: number) => void;
   onSeek: (outT: number) => void;
+  /** ルーラーのスクラブ開始/移動。onSeek より先に呼ばれる */
+  onScrubMove?: (outT: number) => void;
+  /** ルーラーのスクラブ終了。最終時刻を渡す */
+  onScrubEnd?: (outT: number) => void;
   onSelect: (sel: Selection) => void;
   onSelectTrackHeader?: (track: TrackId) => void;
   /** clip: 掴んだクリップ(カットで割れたスパンはフラグメントの位置を持つ) */
@@ -655,8 +661,18 @@ export const Timeline = ({
 
   const onRulerDown = (e: ReactPointerEvent) => {
     if (e.button !== 0) return; // 右クリックでスクラブが固着しないように
-    onSeek(posToT(e.clientX));
-    beginDrag(e, (ev) => onSeek(posToT(ev.clientX)));
+    let lastT = posToT(e.clientX);
+    onScrubMove?.(lastT);
+    onSeek(lastT);
+    beginDrag(
+      e,
+      (ev) => {
+        lastT = posToT(ev.clientX);
+        onScrubMove?.(lastT);
+        onSeek(lastT);
+      },
+      () => onScrubEnd?.(lastT),
+    );
   };
 
   const onClipDown = (e: ReactPointerEvent, clip: Clip, mode: DragMode) => {

@@ -268,6 +268,15 @@ type BlurEntry = NonNullable<Overlays["blurs"]>[number];
 type TextEntry = NonNullable<Overlays["texts"]>[number];
 type BgmEntry = NonNullable<Bgm["tracks"]>[number];
 type CaptionEntry = Transcript["segments"][number];
+const JOB_RESYNC_MS = 15000;
+/** スクラブが止まってから正確なフレームを要求するまで(ms)。 */
+const EXACT_DEBOUNCE_MS = 100;
+
+type ScrubPreviewState =
+  | { mode: "idle" }
+  | { mode: "approximate"; outputSec: number; tile: ThumbTileRef }
+  | { mode: "exact-pending"; outputSec: number; tile: ThumbTileRef }
+  | { mode: "exact" };
 
 /** クリップのコピー&ペースト(標準 NLE の a: クリップ複製)で持ち回る
  * スナップショット。中身ごと複製できるよう entry を丸ごと控える(元収録の
@@ -835,6 +844,9 @@ const EditorApp = () => {
   const peaksRequestedRef = useRef(new Set<string>());
   // EnginePreview が公開する再生操作 API。呼び出し側はこの小さな表面だけを使う。
   const playerRef = useRef<PreviewHandle>(null);
+  const [scrubPreview, setScrubPreview] = useState<ScrubPreviewState>({ mode: "idle" });
+  const exactTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exactTokenRef = useRef(0);
   /** プレビューの表示倍率(プレビューのみ。書き出し・合成には影響しない) */
   const [previewZoom, setPreviewZoom] = useState<"fit" | number>("fit");
   const [tab, setTab] = useState<PanelTab>("materials");
@@ -2017,6 +2029,60 @@ const EditorApp = () => {
 
   const seekOut = (outT: number) =>
     playerRef.current?.seekTo(clamp(Math.round(outT * fps), 0, durationInFrames - 1));
+  const requestExactScrubFrame = useCallback((outT: number) => {
+    const token = ++exactTokenRef.current;
+    setScrubPreview((current) =>
+      current.mode === "approximate" || current.mode === "exact-pending"
+        ? { ...current, mode: "exact-pending", outputSec: outT }
+        : current,
+    );
+    const frame = clamp(Math.round(outT * fps), 0, durationInFrames - 1);
+    const player = playerRef.current;
+    if (!player) {
+      setScrubPreview({ mode: "exact" });
+      return;
+    }
+    void player.seekToAsync(frame).then(() => {
+      if (token === exactTokenRef.current) setScrubPreview({ mode: "exact" });
+    });
+  }, [durationInFrames, fps]);
+  const onScrubMove = useCallback((outT: number) => {
+    if (exactTimerRef.current) {
+      clearTimeout(exactTimerRef.current);
+      exactTimerRef.current = null;
+    }
+    const frame = clamp(Math.round(outT * fps), 0, durationInFrames - 1);
+    const player = playerRef.current;
+    if (player?.isPlaying()) {
+      exactTokenRef.current++;
+      setScrubPreview({ mode: "idle" });
+      player.seekTo(frame);
+      return;
+    }
+    const src = toSourceTime(clamp(outT, 0, Math.max(0, duration - 0.01)), timeline);
+    const tile = src !== null && thumbstrip ? tileRefForSourceSec(src, thumbstrip) : null;
+    if (!tile) {
+      exactTokenRef.current++;
+      setScrubPreview({ mode: "idle" });
+      player?.seekTo(frame);
+      return;
+    }
+    setScrubPreview({ mode: "approximate", outputSec: outT, tile });
+    exactTimerRef.current = setTimeout(() => {
+      exactTimerRef.current = null;
+      requestExactScrubFrame(outT);
+    }, EXACT_DEBOUNCE_MS);
+  }, [duration, durationInFrames, fps, requestExactScrubFrame, thumbstrip, timeline]);
+  const onScrubEnd = useCallback((outT: number) => {
+    if (exactTimerRef.current) {
+      clearTimeout(exactTimerRef.current);
+      exactTimerRef.current = null;
+    }
+    requestExactScrubFrame(outT);
+  }, [requestExactScrubFrame]);
+  useEffect(() => () => {
+    if (exactTimerRef.current) clearTimeout(exactTimerRef.current);
+  }, []);
   const togglePlay = () => {
     const p = playerRef.current;
     if (!p) return;
@@ -6699,6 +6765,21 @@ const EditorApp = () => {
                 baseAudioFile={`media/${proj.proxyFile}`}
                 onFallback={setEngineFailure}
               />
+              {scrubPreview.mode !== "idle" && scrubPreview.mode !== "exact" && (
+                <div
+                  className="scrubApprox"
+                  aria-hidden="true"
+                  style={{
+                    backgroundImage: `url(${projectPath(`/media/${scrubPreview.tile.file}`)})`,
+                    backgroundSize: `${scrubPreview.tile.columns * 100}% ${scrubPreview.tile.rows * 100}%`,
+                    backgroundPosition: `${
+                      (scrubPreview.tile.col / (scrubPreview.tile.columns - 1 || 1)) * 100
+                    }% ${
+                      (scrubPreview.tile.row / (scrubPreview.tile.rows - 1 || 1)) * 100
+                    }%`,
+                  }}
+                />
+              )}
               {/* 素材(部分配置)の移動・リサイズ枠。テロップ枠より下(DOM 前)に
                   置き、重なったときはテロップのドラッグを優先させる */}
               <LiveMaterialOverlay
@@ -7149,7 +7230,9 @@ const EditorApp = () => {
         selection={selection}
         multiCaption={capMulti}
         onToggleCaptionSel={toggleCaptionMulti}
-        onSeek={seekOut}
+        onSeek={(t) => playhead.set(t)}
+        onScrubMove={onScrubMove}
+        onScrubEnd={onScrubEnd}
         onSelect={setSelection}
         onSelectTrackHeader={(track) => {
           if (track === "wipe") setSelection({ kind: "wipe", index: 0 });

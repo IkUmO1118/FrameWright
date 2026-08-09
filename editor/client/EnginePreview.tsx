@@ -49,6 +49,7 @@ function sourceTimeOf(item: ExternalItem): number {
 export type PreviewHandle = Pick<
   PlayerRef,
   | "seekTo"
+  | "seekToAsync"
   | "play"
   | "pause"
   | "isPlaying"
@@ -304,8 +305,8 @@ export const EnginePreview = forwardRef<PreviewHandle, EnginePreviewProps>(funct
 
   useImperativeHandle(
     ref,
-    () => ({
-      seekTo(frame: number) {
+    () => {
+      const seekToAsync = (frame: number): Promise<void> => {
         const sec = frame / fpsRef.current;
         clockRef.current?.seek(sec);
         if (playingRef.current) {
@@ -314,66 +315,75 @@ export const EnginePreview = forwardRef<PreviewHandle, EnginePreviewProps>(funct
           // (AudioScheduler.reseek 内で合体待ちする)
           const clock = clockRef.current;
           if (clock) schedulerRef.current?.reseek(clock.getMapping(), resolveUrl);
+          dispatch("frameupdate", { frame });
+          return Promise.resolve();
         } else {
           const startedAt = performance.now();
-          void repaintAt(sec).finally(() => {
+          const promise = repaintAt(sec).finally(() => {
             const samples = seekSamplesRef.current;
             samples.push(performance.now() - startedAt);
             if (samples.length > SEEK_SAMPLE_LIMIT) samples.shift();
           });
+          dispatch("frameupdate", { frame });
+          return promise;
         }
-        dispatch("frameupdate", { frame });
-      },
-      play() {
-        const audioContext = audioContextRef.current;
-        const clock = clockRef.current;
-        const scheduler = schedulerRef.current;
-        if (!audioContext || !clock || !scheduler) return;
-        playingRef.current = true;
-        // §2-1: resume() → clock.play() → scheduler.start() → listeners("play")
-        void audioContext.resume().then(() => {
-          clock.play();
-          scheduler.start(clock.getMapping(), resolveUrl);
-          dispatch("play", undefined);
-        });
-      },
-      pause() {
-        clockRef.current?.pause();
-        schedulerRef.current?.stop();
-        playingRef.current = false;
-        dispatch("pause", undefined);
-      },
-      isPlaying() {
-        return playingRef.current;
-      },
-      getCurrentFrame() {
-        return Math.round((clockRef.current?.currentOutputSec() ?? 0) * fpsRef.current);
-      },
-      setVolume(v: number) {
-        volumeRef.current = v;
-        schedulerRef.current?.setVolume(v);
-      },
-      addEventListener<T extends PlayerEventTypes>(type: T, listener: Listener<T>) {
-        const sets = listenersRef.current;
-        const existing = sets[type] as Set<Listener<T>> | undefined;
-        if (existing) existing.add(listener);
-        else sets[type] = new Set([listener]) as (typeof sets)[T];
-      },
-      removeEventListener<T extends PlayerEventTypes>(type: T, listener: Listener<T>) {
-        const set = listenersRef.current[type] as Set<Listener<T>> | undefined;
-        set?.delete(listener);
-      },
-      getPresentationStats() {
-        // 呼び出し側は即座に数値をコピーする観測専用なので、複製は作らない。
-        return clockRef.current?.stats ?? null;
-      },
-      takeSeekSamples() {
-        const samples = seekSamplesRef.current;
-        seekSamplesRef.current = [];
-        return samples;
-      },
+      };
+      return {
+        seekTo(frame: number) {
+          void seekToAsync(frame);
+        },
+        seekToAsync,
+        play() {
+          const audioContext = audioContextRef.current;
+          const clock = clockRef.current;
+          const scheduler = schedulerRef.current;
+          if (!audioContext || !clock || !scheduler) return;
+          playingRef.current = true;
+          // §2-1: resume() → clock.play() → scheduler.start() → listeners("play")
+          void audioContext.resume().then(() => {
+            clock.play();
+            scheduler.start(clock.getMapping(), resolveUrl);
+            dispatch("play", undefined);
+          });
+        },
+        pause() {
+          clockRef.current?.pause();
+          schedulerRef.current?.stop();
+          playingRef.current = false;
+          dispatch("pause", undefined);
+        },
+        isPlaying() {
+          return playingRef.current;
+        },
+        getCurrentFrame() {
+          return Math.round((clockRef.current?.currentOutputSec() ?? 0) * fpsRef.current);
+        },
+        setVolume(v: number) {
+          volumeRef.current = v;
+          schedulerRef.current?.setVolume(v);
+        },
+        addEventListener<T extends PlayerEventTypes>(type: T, listener: Listener<T>) {
+          const sets = listenersRef.current;
+          const existing = sets[type] as Set<Listener<T>> | undefined;
+          if (existing) existing.add(listener);
+          else sets[type] = new Set([listener]) as (typeof sets)[T];
+        },
+        removeEventListener<T extends PlayerEventTypes>(type: T, listener: Listener<T>) {
+          const set = listenersRef.current[type] as Set<Listener<T>> | undefined;
+          set?.delete(listener);
+        },
+        getPresentationStats() {
+          // 呼び出し側は即座に数値をコピーする観測専用なので、複製は作らない。
+          return clockRef.current?.stats ?? null;
+        },
+        takeSeekSamples() {
+          const samples = seekSamplesRef.current;
+          seekSamplesRef.current = [];
+          return samples;
+        },
+      };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }),
+    },
     [],
   );
 

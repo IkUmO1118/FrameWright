@@ -1562,6 +1562,13 @@
     transform-origin: center center;
     display: flex; align-items: center; justify-content: center;
   }
+  /* スクラブ中の近似フレーム。正確なフレームではないことを枠線で示す */
+  .scrubApprox {
+    position: absolute; inset: 0; z-index: 5;
+    background-repeat: no-repeat;
+    outline: 2px solid rgba(255, 200, 80, .9); outline-offset: -2px;
+    pointer-events: none;
+  }
   /* ---- 左パネル(タブ: 素材 / テロップ / プロパティ) ---- */
   .sidePanel {
     min-width: 0;

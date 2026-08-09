@@ -22,7 +22,8 @@ const listeners = new Set<() => void>();
 export const playhead = {
   /** 現在の再生ヘッド(カット後の秒)。イベントハンドラから読む用 */
   get: (): number => current,
-  /** Player の frameupdate ハンドラ(App)だけが呼ぶ */
+  /** Player の frameupdate ハンドラ(App)と、ルーラーのスクラブ
+   * (editor-perf P2。正確なフレームを待たずマーカーだけ先行させる)が呼ぶ */
   set: (outT: number): void => {
     if (outT === current) return;
     current = outT;

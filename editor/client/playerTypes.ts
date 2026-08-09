@@ -10,6 +10,7 @@ export type CallbackListener<T extends EventTypes> = (event: PlayerEvent<T>) => 
 
 export interface PlayerRef {
   seekTo(frame: number): void;
+  seekToAsync(frame: number): Promise<void>;
   play(): void;
   pause(): void;
   isPlaying(): boolean;
