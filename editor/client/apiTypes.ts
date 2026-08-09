@@ -157,6 +157,7 @@ export interface ProjectSummary {
   durationSec: number | null;
   canvas: string;
   baseLayout?: string;
+  derivedFrom?: string;
   rendered: boolean;
   modifiedAt: string;
 }

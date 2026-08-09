@@ -333,6 +333,7 @@ export interface ProjectSummary {
   hasManifest: boolean;
   durationSec: number | null;
   canvas: string;
+  derivedFrom?: string;
   rendered: boolean;
   modifiedAt: string;
 }
@@ -382,11 +383,13 @@ export function listProjects(rootDir: string, rootKey: string): ProjectSummary[]
       const hasManifest = existsSync(manifestPath);
       let durationSec: number | null = null;
       let canvas = "landscape";
+      let derivedFrom: string | undefined;
       if (hasManifest) {
         try {
           const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Partial<Manifest>;
           durationSec = typeof manifest.durationSec === "number" ? manifest.durationSec : null;
           canvas = typeof manifest.canvas === "string" ? manifest.canvas : "landscape";
+          derivedFrom = typeof manifest.derivedFrom?.name === "string" ? manifest.derivedFrom.name : undefined;
         } catch {
           // 壊れた manifest もフォルダ自体は一覧から失わせない。
         }
@@ -397,6 +400,7 @@ export function listProjects(rootDir: string, rootKey: string): ProjectSummary[]
         hasManifest,
         durationSec,
         canvas,
+        ...(derivedFrom ? { derivedFrom } : {}),
         rendered: existsSync(join(projectDir, "final.mp4")),
         modifiedAt: statSync(projectDir).mtime.toISOString(),
       };
@@ -429,6 +433,33 @@ export function listProjectsAcrossRoots(roots: RecordingRoot[]): ProjectsRespons
     }
   }
   projects.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  const projectKeys = new Set(projects.map((p) => `${p.root}/${p.name}`));
+  const children = new Map<string, ProjectSummary[]>();
+  const topLevel: ProjectSummary[] = [];
+  for (const project of projects) {
+    const parentKey = project.derivedFrom ? `${project.root}/${project.derivedFrom}` : "";
+    if (parentKey && projectKeys.has(parentKey)) {
+      const list = children.get(parentKey) ?? [];
+      list.push(project);
+      children.set(parentKey, list);
+    } else {
+      topLevel.push(project);
+    }
+  }
+  const ordered: ProjectSummary[] = [];
+  const visited = new Set<string>();
+  const pushTree = (project: ProjectSummary) => {
+    const key = `${project.root}/${project.name}`;
+    if (visited.has(key)) return;
+    visited.add(key);
+    ordered.push(project);
+    for (const child of children.get(key) ?? []) pushTree(child);
+  };
+  for (const project of topLevel) pushTree(project);
+  for (const project of projects) {
+    if (!visited.has(`${project.root}/${project.name}`)) pushTree(project);
+  }
+  projects.splice(0, projects.length, ...ordered);
   return { roots: rootStatuses, projects };
 }
 

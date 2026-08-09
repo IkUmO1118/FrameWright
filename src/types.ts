@@ -18,6 +18,12 @@ export interface Manifest {
   /** 作成時に固定するベース映像(画面/カメラ)の置き方。省略時 "auto"。
    *  camera / stack はカメラのある obs-canvas 収録でのみ有効。 */
   baseLayout?: string;
+  /** 同じ recordings root 直下の親プロジェクトから派生した場合の軽い由来情報。
+   * 絶対パスは持たず、フォルダ移動時は一覧側が同じ root 内の name で解決する。 */
+  derivedFrom?: {
+    name: string;
+    ranges: Interval[];
+  };
   video: {
     width: number;
     height: number;

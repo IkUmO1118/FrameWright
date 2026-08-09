@@ -56,6 +56,23 @@ FrameWright は「全部AI任せ」のツールではない。**まずエディ�
 ⑧ meta.json のタイトル案・概要欄、chapters.json の章をYouTube投稿に使う
 
 ⑨ 別サイズも出すなら node src/cli.ts derive <フォルダ> …
+
+コマンド表面は、日常の編集補助を 3 動詞にまとめている:
+
+```sh
+node src/cli.ts probe <dir> --all          # materials.probe/ + av.probe/
+node src/cli.ts draft <dir> --all          # overlays.json / bgm.json の下書き
+node src/cli.ts check <dir> --all          # 検品。通常は編集ファイルを書かない
+node src/cli.ts check <dir> --all --fix    # suggested patch を安全に apply
+node src/cli.ts run <dir> --full           # 初版 + probe --all + draft --all
+```
+
+`probe --all` は `--style` を含めない。`draft --all` は `--zoom` を含めない。
+`run --full` は thumbnail を作らない。
+
+GUI エディタはタイムライン表示を軽くするため、収録フォルダ直下の
+`timeline.probe/` に波形やサムネイルの再生成可能なキャッシュを作ることがある。
+これは編集データではなく、`clean --cache-only` で消しても次回表示時に再生成される。
      元メディアを共有する派生プロジェクトを作り、②〜⑦ をそちらでもう一巡
      (→ 下の「縦動画・別キャンバスの作り方」)
 ```

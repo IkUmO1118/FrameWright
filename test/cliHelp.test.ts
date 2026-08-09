@@ -52,7 +52,7 @@ test("cliHelp: 要約は端末1行に収まる短さ(全角2桁換算で60以内
 
 test("cliHelp: 一覧は全コマンドと全グループ名を含む", () => {
   const out = formatCommandList("framewright");
-  for (const g of COMMAND_GROUPS) {
+  for (const g of COMMAND_GROUPS.filter((group) => group.hidden !== true)) {
     assert.ok(out.includes(g.title), `グループ ${g.title} が一覧に出ていません`);
     for (const c of g.commands) assert.ok(out.includes(c.name), `${c.name} が一覧に出ていません`);
   }
@@ -63,6 +63,10 @@ test("cliHelp: ルートヘルプは短く保つ(端末1画面ぶん=35行以内
   assert.ok(out.split("\n").length <= 35, "ルートヘルプが長すぎます(全コマンドは commands へ)");
   // 基本の流れ(初見で叩く順)と、全コマンドへの導線が必ずあること
   for (const name of ["doctor", "editor", "run", "preview", "approve", "render"]) {
+    assert.ok(out.includes(name), `${name} がルートヘルプにありません`);
+  }
+  // 知覚→下書き→検品の3層は、旧12コマンドの入口を兼ねるのでルートヘルプに出す
+  for (const name of ["probe", "draft", "check"]) {
     assert.ok(out.includes(name), `${name} がルートヘルプにありません`);
   }
   assert.ok(out.includes("framewright commands"), "全コマンドへの導線がありません");

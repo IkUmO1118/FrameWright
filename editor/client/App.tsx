@@ -714,7 +714,7 @@ function LauncherApp() {
           const ready = project.hasManifest && project.durationSec !== null;
           return (
             <a
-              className="projectCard"
+              className={`projectCard${project.derivedFrom ? " derived" : ""}`}
               key={`${project.root}/${project.name}`}
               href={recordingRootMode() === "multi"
                 ? `/p/${encodeURIComponent(project.root)}/${encodeURIComponent(project.name)}/`
@@ -732,8 +732,10 @@ function LauncherApp() {
                   : <span className="projectCardTodo">メディア未選択</span>}
                 <span>{preset?.aspect ?? project.canvas}</span>
                 {roots.length > 1 && <span className="projectCardBadge">{project.root}</span>}
+                {project.derivedFrom && <span className="projectCardBadge">派生</span>}
                 {project.rendered && <span className="projectCardBadge">書き出し済み</span>}
               </span>
+              {project.derivedFrom && <span className="projectCardParent">親: {project.derivedFrom}</span>}
               <time>{new Date(project.modifiedAt).toLocaleString()}</time>
             </a>
           );

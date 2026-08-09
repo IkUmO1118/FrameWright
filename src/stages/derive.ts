@@ -136,6 +136,15 @@ export async function deriveProject(request: DeriveRequest, deps: DeriveDeps = {
       request.canvas,
       request.baseLayout,
     );
+    const derivedManifestPath = join(destination, "manifest.json");
+    const derivedManifest = JSON.parse(readFileSync(derivedManifestPath, "utf8")) as Manifest;
+    writeFileSync(
+      derivedManifestPath,
+      JSON.stringify({
+        ...derivedManifest,
+        derivedFrom: { name: basename(sourceDir), ranges: request.ranges },
+      }, null, 2),
+    );
     copyFileSync(transcriptPath, join(destination, "transcript.json"));
     writeFileSync(join(destination, "cutplan.json"), JSON.stringify(cutplan, null, 2));
     return { dir: destination, transfer, cutplan };

@@ -14,7 +14,7 @@
 /** 一覧に出す1コマンド。summary は端末1行に収まる長さに保つ */
 export type CommandEntry = { name: string; summary: string };
 
-export type CommandGroup = { title: string; note?: string; commands: CommandEntry[] };
+export type CommandGroup = { title: string; note?: string; hidden?: true; commands: CommandEntry[] };
 
 /** 分類の単一の出所。並び順がそのまま `framewright commands` の出力順になる */
 export const COMMAND_GROUPS: CommandGroup[] = [
@@ -65,8 +65,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     commands: [
       { name: "frames", summary: "指定時刻を最終合成の見た目で PNG に" },
       { name: "frames-serve", summary: "frames を高速化する常駐サーバ(opt-in)" },
-      { name: "materials", summary: "素材(B-roll)の尺・解像度・参照/未使用を調べる" },
-      { name: "av", summary: "keep 後タイムラインの動き・音を計測" },
+      { name: "probe", summary: "素材・A/V の知覚をまとめて実行" },
       { name: "record", summary: "収録に連動してカーソル座標を記録(macOS)" },
       { name: "index", summary: "収録横断のローカル検索インデックスを更新" },
       { name: "search", summary: "収録・素材・OCR・文字起こしをローカル検索" },
@@ -77,10 +76,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     title: "AI に下書きさせる",
     note: "いずれも下書き止まり。cutplan(カット)と承認には触れない",
     commands: [
-      { name: "plan-materials", summary: "素材の配置を下書き(overlays.json)" },
-      { name: "plan-effects", summary: "演出(ズーム・ぼかし・注釈)を下書き" },
-      { name: "plan-bgm", summary: "BGM の区間配置を下書き(bgm.json)" },
-      { name: "autozoom", summary: "カーソル dwell からズームを自動配置(LLM 不使用)" },
+      { name: "draft", summary: "素材・演出・BGM の下書きをまとめて実行" },
       { name: "learn", summary: "次回用のチャンネルルール追記案を下書き" },
     ],
   },
@@ -88,10 +84,23 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     title: "検品する",
     note: "編集ファイルは書かない。修正案は apply パッチの下書きとして出る",
     commands: [
+      { name: "check", summary: "素材・演出・BGM・型・境界をまとめて検品" },
+    ],
+  },
+  {
+    title: "旧名(互換)",
+    hidden: true,
+    commands: [
+      { name: "materials", summary: "素材(B-roll)の尺・解像度・参照/未使用を調べる" },
+      { name: "av", summary: "keep 後タイムラインの動き・音を計測" },
+      { name: "style-profile", summary: "動画からスタイルプロファイルを抽出" },
+      { name: "plan-materials", summary: "素材の配置を下書き(overlays.json)" },
+      { name: "plan-effects", summary: "演出(ズーム・ぼかし・注釈)を下書き" },
+      { name: "plan-bgm", summary: "BGM の区間配置を下書き(bgm.json)" },
+      { name: "autozoom", summary: "カーソル dwell からズームを自動配置(LLM 不使用)" },
       { name: "material-fit", summary: "素材の尺不整合・未使用/参照切れを検出" },
       { name: "effect-check", summary: "演出(ズーム・ぼかし・注釈)を検品" },
       { name: "bgm-fit", summary: "BGM の音量・発話被り・フェードを検品" },
-      { name: "style-profile", summary: "動画からスタイルプロファイルを抽出" },
       { name: "style-check", summary: "学習した型からの逸脱を測る" },
       { name: "boundary-check", summary: "keep 終端の語尾食いを実音声で検品" },
     ],
@@ -166,9 +175,11 @@ function pad(text: string, width: number): string {
 
 /** `framewright commands` の本文(分類つきの全コマンド一覧) */
 export function formatCommandList(bin: string): string {
-  const width = Math.max(...listedCommandNames().map((n) => displayWidth(n))) + 2;
+  const visibleNames = COMMAND_GROUPS.filter((g) => g.hidden !== true).flatMap((g) => g.commands.map((c) => c.name));
+  const width = Math.max(...visibleNames.map((n) => displayWidth(n))) + 2;
   const out: string[] = ["", `${bin} のコマンド一覧(詳細は ${bin} <コマンド> --help)`, ""];
   for (const g of COMMAND_GROUPS) {
+    if (g.hidden === true) continue;
     out.push(`${g.title}`);
     if (g.note) out.push(`  ※ ${g.note}`);
     for (const c of g.commands) out.push(`  ${pad(c.name, width)}${c.summary}`);
@@ -190,8 +201,11 @@ function summaryOf(name: string): string {
 /** `framewright --help` の本文。全コマンドは出さず、初見で叩く順に絞る */
 export function formatRootHelp(bin: string, globalOptions: string[]): string {
   const core = ["doctor", "editor", "run", "preview", "approve", "render"];
+  // 知覚 → 下書き → 検品。書き込み権限で割れた3層(probe は *.probe/ だけ、
+  // draft は編集ファイル、check は --fix なしなら *.suggested.json だけ)。
+  const layers = ["probe", "draft", "check"];
   const editing = ["validate", "describe", "frames", "apply", "clean"];
-  const width = Math.max(...[...core, ...editing].map((n) => displayWidth(n))) + 2;
+  const width = Math.max(...[...core, ...layers, ...editing].map((n) => displayWidth(n))) + 2;
   const section = (title: string, names: string[]): string[] => [
     title,
     ...names.map((n) => `  ${pad(n, width)}${summaryOf(n)}`),
@@ -204,6 +218,7 @@ export function formatRootHelp(bin: string, globalOptions: string[]): string {
     `  ${bin} <コマンド> <収録フォルダ> [オプション]`,
     "",
     ...section("基本の流れ", core),
+    ...section("知覚・下書き・検品", layers),
     ...section("編集まわり", editing),
     "グローバルオプション",
     ...globalOptions.map((l) => `  ${l}`),

@@ -64,6 +64,55 @@ test("project launcher: 複数ルートを横断して一覧し、未接続ル�
   }
 });
 
+test("project launcher: 派生プロジェクトは同一rootの親直下に孫まで並べる", () => {
+  const root = mkdtempSync(join(tmpdir(), "framewright-launcher-derived-"));
+  try {
+    for (const name of ["parent", "newer", "child", "grand"]) mkdirSync(join(root, name));
+    writeFileSync(join(root, "parent", "manifest.json"), JSON.stringify({ durationSec: 10, canvas: "landscape" }));
+    writeFileSync(join(root, "newer", "manifest.json"), JSON.stringify({ durationSec: 10, canvas: "landscape" }));
+    writeFileSync(join(root, "child", "manifest.json"), JSON.stringify({
+      durationSec: 4,
+      canvas: "portrait",
+      derivedFrom: { name: "parent", ranges: [{ start: 1, end: 5 }] },
+    }));
+    writeFileSync(join(root, "grand", "manifest.json"), JSON.stringify({
+      durationSec: 2,
+      canvas: "square",
+      derivedFrom: { name: "child", ranges: [{ start: 2, end: 4 }] },
+    }));
+    const result = listProjectsAcrossRoots([{ key: "main", path: root }]);
+    const names = result.projects.map((p) => p.name);
+    assert.equal(names.indexOf("child"), names.indexOf("parent") + 1);
+    assert.equal(names.indexOf("grand"), names.indexOf("child") + 1);
+    assert.equal(result.projects.find((p) => p.name === "child")?.derivedFrom, "parent");
+    assert.equal(result.projects.find((p) => p.name === "grand")?.derivedFrom, "child");
+    assert.equal(result.projects.length, 4);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("project launcher: 派生の循環参照でもプロジェクトを消さない", () => {
+  const root = mkdtempSync(join(tmpdir(), "framewright-launcher-cycle-"));
+  try {
+    for (const name of ["a", "b"]) mkdirSync(join(root, name));
+    writeFileSync(join(root, "a", "manifest.json"), JSON.stringify({
+      durationSec: 10,
+      canvas: "landscape",
+      derivedFrom: { name: "b", ranges: [{ start: 1, end: 5 }] },
+    }));
+    writeFileSync(join(root, "b", "manifest.json"), JSON.stringify({
+      durationSec: 10,
+      canvas: "landscape",
+      derivedFrom: { name: "a", ranges: [{ start: 2, end: 6 }] },
+    }));
+    const result = listProjectsAcrossRoots([{ key: "main", path: root }]);
+    assert.deepEqual(result.projects.map((p) => p.name).sort(), ["a", "b"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("project launcher: findRecordingRoot は未知キーを 404 で拒否する", () => {
   const roots = [{ key: "main", path: "/tmp/a" }, { key: "usb-a", path: "/tmp/b" }];
   assert.equal(findRecordingRoot(roots, "usb-a").path, "/tmp/b");
