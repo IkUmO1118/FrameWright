@@ -29,6 +29,12 @@ function deps(calls: string[]): Partial<RunDraftDeps> {
     }) as RunDraftDeps["plan"],
     idStamp: (() => { calls.push("id-stamp"); return { changed: [], validate: { errors: [], warnings: [] } }; }) as RunDraftDeps["idStamp"],
     autoZoomIfFresh: (() => { calls.push("autozoom"); return null; }) as RunDraftDeps["autoZoomIfFresh"],
+    probe: (async () => { calls.push("probe"); return ["materials", "av"]; }) as RunDraftDeps["probe"],
+    draft: (async (_dir, _cfg, opts) => {
+      const step = opts.materials ? "materials" : opts.effects ? "effects" : opts.bgm ? "bgm" : "unknown";
+      calls.push(`draft:${step}`);
+      return [step];
+    }) as RunDraftDeps["draft"],
     stage: (async (name, task) => { calls.push(`stage:${name}`); return await task(); }) as RunDraftDeps["stage"],
   };
 }
@@ -50,6 +56,24 @@ test("runDraft: manifest 無しなら ingest→transcribe→detect→plan の後
     await runDraft(dir, cfg, { layout: "plain", canvas: "portrait" }, deps(calls));
     assert.deepEqual(calls, [
       "stage:ingest", "ingest", "stage:transcribe", "transcribe", "stage:detect", "detect", "stage:plan", "plan", "id-stamp", "autozoom",
+    ]);
+  });
+});
+
+test("runDraft: full は既定鎖の後に probe --all と draft 各段を実行する", async () => {
+  await withDir(async (dir) => {
+    writeFileSync(join(dir, "manifest.json"), "{}");
+    const calls: string[] = [];
+    const result = await runDraft(dir, cfg, { full: true }, deps(calls));
+    assert.deepEqual(result.fullProbe, ["materials", "av"]);
+    assert.deepEqual(result.fullDraft, ["materials", "effects", "bgm"]);
+    assert.deepEqual(result.fullFailures, []);
+    assert.deepEqual(calls.slice(-9), [
+      "stage:probe", "probe",
+      "stage:draft:materials", "draft:materials",
+      "stage:draft:effects", "draft:effects",
+      "stage:draft:bgm", "draft:bgm",
+      "autozoom",
     ]);
   });
 });

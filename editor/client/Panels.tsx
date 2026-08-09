@@ -840,8 +840,11 @@ export const HyperframeAuthorPanel = ({
  * 選択+その位置へシーク。位置・スタイルの詳細は右側のインスペクタで編集する。
  */
 export const CaptionsPanel = ({
-  transcript,
+  captionSegments,
   overlays,
+  captionsAdoptable,
+  captionsAdoptionDisabled,
+  onAdoptCaptions,
   selectedIndex,
   multiSelected,
   onRowClick,
@@ -853,8 +856,15 @@ export const CaptionsPanel = ({
   aiResolution: transcriptAiResolution,
   onAiSetHunk: transcriptOnAiSetHunk,
 }: {
-  transcript: Transcript;
+  /** テロップとして採用済みの segments。未採用なら空(App 側の captionSegments を渡す) */
+  captionSegments: Transcript["segments"];
   overlays: Overlays;
+  /** 自動解析 transcript が未採用で、一覧の代わりに採用案内を出す状態 */
+  captionsAdoptable: boolean;
+  /** 文字起こし中など、採用ボタンを一時的に押せない状態 */
+  captionsAdoptionDisabled: boolean;
+  /** 未採用 transcript をテロップとして採用する(App 側で履歴込みで実行) */
+  onAdoptCaptions: () => void;
   /** 選択中のテロップ(transcript.segments の添字)。テロップ以外の選択は null */
   selectedIndex: number | null;
   /** 複数選択中のテロップ(2件以上のときだけ) */
@@ -885,7 +895,7 @@ export const CaptionsPanel = ({
   // カード専用で、通常のテロップとは役割が別なのでこのタブには出さない
   // (章の内容は「設定」→章、または chapters.json で編集する)
   const chapterTrack = overlays.captionTracks?.find((t) => t.name === "章")?.track;
-  const rows = transcript.segments
+  const rows = captionSegments
     .map((s, i) => ({ s, i }))
     .filter(({ s }) => captionTrack(s) !== chapterTrack);
 
@@ -915,6 +925,35 @@ export const CaptionsPanel = ({
     }
     return merged;
   }, [rows, transcriptAiHunks]);
+
+  if (captionsAdoptable) {
+    return (
+      <EmptyState
+        icon={<Captions size={20} />}
+        title="文字起こしは終わっています。"
+        description={(
+          <>
+            テロップとして入れると、発話がそのままテロップになります。
+            <br />
+            入れたあとは1件ずつ文言・位置・スタイルを編集できます。
+          </>
+        )}
+        actions={(
+          <Button
+            variant="outline"
+            size="sm"
+            className="ocMaterialImport"
+            disabled={captionsAdoptionDisabled}
+            title={captionsAdoptionDisabled ? "文字起こし中です" : undefined}
+            onClick={onAdoptCaptions}
+          >
+            <Captions size={13} strokeWidth={1.75} aria-hidden />
+            文字起こしをテロップにする
+          </Button>
+        )}
+      />
+    );
+  }
 
   if (rows.length === 0) {
     return (

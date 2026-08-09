@@ -41,6 +41,9 @@ import { planMaterials } from "./stages/planMaterials.ts";
 import { planEffects } from "./stages/planEffects.ts";
 import { autoZoom, autoZoomIfFresh } from "./stages/autoZoom.ts";
 import { planBgm } from "./stages/planBgm.ts";
+import { probe as runProbe } from "./stages/probe.ts";
+import { draft as runDomainDraft } from "./stages/draft.ts";
+import { check as runCheck } from "./stages/check.ts";
 import { authorHyperframe, renderHyperframe } from "./stages/hyperframe.ts";
 import { embedLottieHyperframe } from "./stages/hyperframeLottie.ts";
 import { formatHyperframeBackends, hyperframeBackends } from "./lib/hyperframeBackends.ts";
@@ -151,7 +154,7 @@ program.hook("postAction", (_thisCommand, actionCommand) => {
   const jsonCommands = new Set([
     "describe", "assert", "doctor", "clean", "boundary-check", "silence-sweep", "floor-calibration",
     "boundary-direction",
-    "compaction-sweep",
+    "compaction-sweep", "check",
     "calibration-evaluate", "hyperframe-backends",
   ]);
   const isMcp = actionCommand.name() === "mcp";
@@ -565,6 +568,88 @@ program
     console.log(
       "\n次のステップ: preview か GUI エディタで確認し、要らなければ overlays.json から削除してください。",
     );
+  });
+
+program
+  .command("probe <dir>")
+  .description("知覚層をまとめて実行する(materials.probe/ と av.probe/。--style は明示時のみ)")
+  .option("--materials", "素材(B-roll)を知覚する")
+  .option("--av", "keep 後タイムラインの motion/sound を知覚する")
+  .option("--style", "style-profile --from <dir> を実行する(--all には含まれない)")
+  .option("--all", "materials + av を実行する(--style は含めない)")
+  .option("--deep", "materials で frames/OCR/transcribe まで実行する")
+  .action(async (dir: string, opts: { materials?: boolean; av?: boolean; style?: boolean; all?: boolean; deep?: boolean }) => {
+    const cfg = loadConfig(program.opts().config);
+    const abs = resolveDir(dir);
+    const ran = await runProbe(abs, cfg, { ...opts, onLine: (line) => console.log(line) });
+    console.log(`probe 完了: ${ran.join(", ") || "なし"}`);
+  });
+
+program
+  .command("draft <dir>")
+  .description("下書き層をまとめて実行する(overlays.json / bgm.json。cutplan と approvals には触れない)")
+  .option("--materials", "素材配置を下書きする")
+  .option("--effects", "演出を下書きする")
+  .option("--bgm", "BGM 配置を下書きする")
+  .option("--zoom", "cursor dwell から zoom を下書きする(--all には含めない)")
+  .option("--all", "materials + effects + bgm を実行する(--zoom は含めない)")
+  .option("--force", "各段の既存出力を上書きする")
+  .action(async (
+    dir: string,
+    opts: { materials?: boolean; effects?: boolean; bgm?: boolean; zoom?: boolean; all?: boolean; force?: boolean },
+  ) => {
+    const cfg = loadConfig(program.opts().config);
+    const abs = resolveDir(dir);
+    const ran = await runDomainDraft(abs, cfg, opts);
+    console.log(`draft 完了: ${ran.join(", ") || "なし"}`);
+  });
+
+program
+  .command("check <dir>")
+  .description("検品層をまとめて実行する。--fix なしでは編集ファイルを変更しない")
+  .option("--materials", "素材の尺不整合・未使用/参照切れを検品する")
+  .option("--effects", "演出を検品する")
+  .option("--bgm", "BGM を検品する")
+  .option("--style", "学習済み style profile からの逸脱を検品する")
+  .option("--boundary", "keep 終端の語尾食いを検品する")
+  .option("--all", "全検品を実行する(前提エラーの domain は warn してスキップ)")
+  .option("--no-vlm", "effect check の VLM 二次確認をスキップする")
+  .option("--json", "実行結果の要約 JSON を標準出力に出す")
+  .option("--fix", "生成された apply パッチ下書きの安全な補正だけ適用する")
+  .option("--dry-run", "--fix の適用内容を検査し、書き込まない")
+  .option("--profile <name>", "style-check の参照 profile 名")
+  .action(async (
+    dir: string,
+    opts: {
+      materials?: boolean;
+      effects?: boolean;
+      bgm?: boolean;
+      style?: boolean;
+      boundary?: boolean;
+      all?: boolean;
+      vlm?: boolean;
+      json?: boolean;
+      fix?: boolean;
+      dryRun?: boolean;
+      profile?: string;
+    },
+  ) => {
+    const cfg = loadConfig(program.opts().config);
+    const abs = resolveDir(dir);
+    const result = await runCheck(abs, cfg, {
+      ...opts,
+      noVlm: opts.vlm === false,
+      onLine: (line) => opts.json === true ? console.error(line) : console.log(line),
+      onWarn: (line) => opts.json === true ? console.error(`警告: ${line}`) : console.warn(`警告: ${line}`),
+    });
+    if (opts.json === true) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(`check 完了: ${result.ran.join(", ") || "なし"}`);
+    for (const item of result.fixed) {
+      console.log(`fix ${item.file}: ${item.status}${item.changedFiles.length > 0 ? ` (${item.changedFiles.join(", ")})` : ""}`);
+    }
   });
 
 program
@@ -1876,7 +1961,19 @@ program
   .option("--base-layout <kind>", "ベース映像配置。manifest が無い作成時だけ有効")
   .option("--mic-track <n>", "マイク音声トラック(1始まり)。manifest が無いときだけ有効")
   .option("--system-track <n>", "システム音声トラック(1始まり)。manifest が無いときだけ有効")
-  .action(async (dir: string, opts: { force?: boolean; layout?: string; canvas?: string; baseLayout?: string; micTrack?: string; systemTrack?: string }) => {
+  .option("--full", "AI 初版に加えて probe --all と draft --all まで実行する")
+  .action(async (
+    dir: string,
+    opts: {
+      force?: boolean;
+      layout?: string;
+      canvas?: string;
+      baseLayout?: string;
+      micTrack?: string;
+      systemTrack?: string;
+      full?: boolean;
+    },
+  ) => {
     const cfg = loadConfig(program.opts().config);
     const abs = resolveDir(dir);
     const layout = parseLayoutOpt(opts.layout);
@@ -1895,6 +1992,7 @@ program
       tracks,
       canvas,
       baseLayout,
+      full: opts.full === true,
       beforePlan: () => printPerceptionStatus(cfg),
     }, { stage: timed });
     const c = result.detected;
@@ -1914,6 +2012,15 @@ program
     const az = result.autoZoom;
     if (az) {
       console.log(`autozoom: zoom${az.placedCount}件を自動配置`);
+    }
+    if (opts.full === true) {
+      if (result.fullProbe.length > 0) console.log(`probe: ${result.fullProbe.join(", ")}`);
+      if (result.fullDraft.length > 0) console.log(`draft: ${result.fullDraft.join(", ")}`);
+      if (result.fullFailures.length > 0) {
+        console.warn("run --full の一部段階が失敗しました:");
+        for (const failure of result.fullFailures) console.warn(`  ${failure}`);
+      }
+      console.log("thumbnail.json を書けば thumbnail コマンドでサムネイルを生成できます。");
     }
   });
 

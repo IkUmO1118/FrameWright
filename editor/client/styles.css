@@ -109,6 +109,7 @@
 
 .launcherGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
 .projectCard { display: grid; gap: 10px; padding: 16px; color: inherit; text-decoration: none; border: 1px solid hsl(var(--oc-border)); border-radius: 10px; background: hsl(var(--oc-card)); }
+.projectCard.derived { margin-left: 24px; border-left-width: 3px; }
 .projectCard:hover { border-color: hsl(var(--oc-ring)); }
 .projectCardTop { display: flex; gap: 10px; align-items: center; }
 .projectCardTop strong { font-size: 14px; overflow-wrap: anywhere; }
@@ -116,6 +117,7 @@
 .projectCardDur { font-variant-numeric: tabular-nums; }
 .projectCardTodo { color: hsl(var(--oc-destructive)); }
 .projectCardBadge { padding: 1px 8px; border-radius: 999px; background: hsl(var(--oc-muted)); }
+.projectCardParent { color: hsl(var(--oc-muted-foreground)); font-size: 12px; }
 .projectCard time, .projectCard span { color: hsl(var(--oc-muted-foreground)); font-size: 12px; }
 @media (max-width: 700px) { .launcherHeader { flex-wrap: wrap; } .launcherHeader button { margin-left: 0; } }
 
@@ -1560,6 +1562,13 @@
     transform-origin: center center;
     display: flex; align-items: center; justify-content: center;
   }
+  /* スクラブ中の近似フレーム。正確なフレームではないことを枠線で示す */
+  .scrubApprox {
+    position: absolute; inset: 0; z-index: 5;
+    background-repeat: no-repeat;
+    outline: 2px solid rgba(255, 200, 80, .9); outline-offset: -2px;
+    pointer-events: none;
+  }
   /* ---- 左パネル(タブ: 素材 / テロップ / プロパティ) ---- */
   .sidePanel {
     min-width: 0;
@@ -2710,6 +2719,16 @@
     position: absolute; inset: 0;
     width: 100%; height: 100%;
     pointer-events: none;
+  }
+  .tlFilm {
+    position: absolute; inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: .9;
+  }
+  .tlFilmTile {
+    position: absolute; top: 0;
+    background-repeat: no-repeat;
   }
   .tlClipLabel {
     font-size: 10px; padding: 0 6px;
@@ -6769,14 +6788,21 @@
 /* セット表示: diff レーン(上)と本体トラック(下)を左罫と背景で括る。
    間には境界線を引かず、セットの外側にだけ引く */
 .diffTrack.setTop,
+.tlTrack.setTop,
 .tlTrack.setBottom,
 .tlLabelDiff.setTop,
+.tlLabel.setTop,
 .tlLabel.setBottom {
   background: hsl(var(--oc-accent) / 0.05);
   box-shadow: inset 2px 0 0 0 hsl(var(--oc-primary) / 0.7);
 }
 .diffTrack.setTop,
+.tlTrack.setTop,
 .tlLabelDiff.setTop {
+  border-top: 1px solid hsl(var(--oc-border));
+  border-bottom: none;
+}
+.tlLabel.setTop {
   border-top: 1px solid hsl(var(--oc-border));
   border-bottom: none;
 }

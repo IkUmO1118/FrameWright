@@ -208,7 +208,10 @@ export function buildRenderProps(args: {
   });
   const builtTimeline = buildTimelineModel(keeps, activeInserts);
   const timeline = builtTimeline.entries;
-  const captions: Caption[] = transcript.segments
+  /** テロップとして採用済みの segments。未採用(自動解析の直後)は空 =
+   * 発話は知覚データとして残しつつ画面には出さない。 */
+  const captionSegments = transcript.generatedBy === "transcribe" ? [] : transcript.segments;
+  const captions: Caption[] = captionSegments
     .flatMap((s) => {
       // 位置・スタイルはここで解決する(セグメント指定 → トラック標準 → 既定)。
       // anchor(座標の解釈)はトラック標準に従い、pos が無ければ意味を持たない
@@ -904,7 +907,8 @@ export function ovCountOf(overlays: Overlays): number {
 
 /** transcript のセグメントが参照するテロップトラックの最大番号(最低1) */
 export function capCountOf(transcript: Transcript): number {
-  return Math.max(1, ...transcript.segments.map(captionTrack));
+  const captionSegments = transcript.generatedBy === "transcribe" ? [] : transcript.segments;
+  return Math.max(1, ...captionSegments.map(captionTrack));
 }
 
 /** texts のエントリが参照するテキストトラックの最大番号(最低1) */

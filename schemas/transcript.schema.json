@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["language", "model", "segments"],
   "properties": {
-    "generatedBy": { "const": "bootstrap" },
+    "generatedBy": { "enum": ["bootstrap", "transcribe"] },
     "language": { "type": "string" },
     "model": { "type": "string" },
     "segments": {

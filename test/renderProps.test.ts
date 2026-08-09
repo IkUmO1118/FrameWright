@@ -65,6 +65,7 @@ test("normalizeLayerOrder: text の欠番は最下層ではなく既存テキス
 test("capCountOf / ovCountOf / textCountOf: 参照される最大トラック番号(最低1)", () => {
   assert.equal(capCountOf({ segments: [{ start: 0, end: 1, text: "a", track: 3 }] } as Transcript), 3);
   assert.equal(capCountOf({ segments: [{ start: 0, end: 1, text: "a" }] } as Transcript), 1);
+  assert.equal(capCountOf({ generatedBy: "transcribe", segments: [{ start: 0, end: 1, text: "a", track: 3 }] } as Transcript), 1);
   assert.equal(ovCountOf({ overlays: [{ start: 0, end: 1, file: "x.png", track: 2 }] } as Overlays), 2);
   assert.equal(ovCountOf({} as Overlays), 1);
   assert.equal(textCountOf({ texts: [{ start: 0, end: 1, text: "a", track: 4, pos: { x: 0, y: 0 } }] } as Overlays), 4);
@@ -129,6 +130,33 @@ test("buildRenderProps: カット内のテロップは落ち、尺は keep の�
     { start: 2, end: 5 },
   );
   assert.deepEqual(props.layerOrder, ["ov1", "wipe", "caption"]);
+});
+
+test("buildRenderProps: generatedBy=transcribe の transcript はテロップを描かない", () => {
+  const args = {
+    manifest,
+    keeps: [{ start: 0, end: 10 }],
+    transcript: {
+      segments: [{ start: 1, end: 3, text: "未採用テロップ" }],
+    } as Transcript,
+    overlays: {},
+    renderCfg,
+    width: 1920,
+    height: 1080,
+    videoFile: "cut.mp4",
+    bgm: null,
+    bgmFallbackFile: null,
+    overlayExists: () => true,
+    warn: () => {},
+  };
+  assert.equal(buildRenderProps(args).captions.length, 1);
+  assert.equal(
+    buildRenderProps({
+      ...args,
+      transcript: { ...args.transcript, generatedBy: "transcribe" },
+    }).captions.length,
+    0,
+  );
 });
 
 test("buildRenderProps: editor proxy 経路では speed を playbackRate に載せる", () => {

@@ -24,6 +24,13 @@ import { renderCfgWithDesign } from "../src/lib/designAsset.ts";
 import { resolveDesign } from "../src/lib/design.ts";
 import { existingDesignAssets, prepareDesignAssetBundle } from "../src/lib/designStill.ts";
 import {
+  isWaveformEntryFresh,
+  referencedBinNames,
+  WAVEFORM_GENERATION,
+  waveformBinName,
+} from "../src/lib/waveformCache.ts";
+import type { WaveformEntryKey, WaveformIndex } from "../src/lib/waveformCache.ts";
+import {
   buildEditorClientAssets,
   buildEngineDevAssets,
   createEditorClientReloader,
@@ -50,12 +57,11 @@ import { classifyBrowserDisplayable } from "../src/lib/mediaCodec.ts";
 import type { DisplayVerdict, VideoCodecFacts } from "../src/lib/mediaCodec.ts";
 import { ensureIds, hasAnyId, ID_PREFIX, usedIdsOf } from "../src/lib/ids.ts";
 import { mergeBodyOverDisk } from "../src/lib/applyEdits.ts";
-import { withoutBootstrapMarker } from "../src/lib/bootstrapArtifact.ts";
+import { isBootstrapArtifact, withoutBootstrapMarker } from "../src/lib/bootstrapArtifact.ts";
 import { PROJECT_DIRECTORY_EXCLUDES } from "../src/lib/files.ts";
-import { rerunConflicts } from "../src/lib/rerunGuard.ts";
 import { bootstrapProjectWithLayout } from "../src/stages/bootstrap.ts";
+import { detect } from "../src/stages/detect.ts";
 import { ingest } from "../src/stages/ingest.ts";
-import { runDraft } from "../src/stages/runDraft.ts";
 import { deriveProject } from "../src/stages/derive.ts";
 import { listSourceCandidates } from "../src/lib/findSource.ts";
 import { isBaseLayoutPreset, isCanvasPreset, outputSize, resolveCanvas } from "../src/lib/profile.ts";
@@ -64,6 +70,7 @@ import type { AiProposeResponse as EditorAiStageProposeResponse } from "../src/s
 import { reviewSpecOfProposalReview } from "../src/lib/editorAiReview.ts";
 import { frames } from "../src/stages/frames.ts";
 import { buildProxy, isProxyStale } from "../src/stages/proxy.ts";
+import { ensureThumbstrip } from "../src/stages/thumbstrip.ts";
 import { preview } from "../src/stages/preview.ts";
 import { findBgm, render } from "../src/stages/render.ts";
 import { reviewEdit } from "../src/stages/review.ts";
@@ -85,7 +92,7 @@ import {
   hyperframeAuthorConflict,
   validateHyperframeAuthorRequest,
 } from "../src/lib/hyperframeAuthor.ts";
-import { readEditableDocs } from "../src/stages/idStamp.ts";
+import { idStamp, readEditableDocs } from "../src/stages/idStamp.ts";
 import { aiProfileStatuses, profileForRoute, resolveAiReviewCfg, resolveAiRuntimeConfig, resolveHyperframeAssetLimits, resolvePerceptionStatus, recordingRootState, resolveRecordingRoots } from "../src/lib/config.ts";
 import type { Config, RecordingRoot } from "../src/lib/config.ts";
 import {
@@ -103,6 +110,7 @@ import type {
   AutoCuts,
   Bgm,
   CutPlan,
+  Interval,
   Manifest,
   Overlays,
   Transcript,
@@ -113,6 +121,8 @@ import type {
   HyperframeCard,
   HyperframeAuthorRequest,
   HyperframeRenderRequest,
+  JobKind,
+  RenderJob,
   AiFrameRequest,
   AiProposeRequest,
   AiRefineRequest,
@@ -123,7 +133,7 @@ import type {
   ScriptData,
   ScriptSegment,
 } from "./client/apiTypes.ts";
-import { buildWords } from "../src/stages/transcribe.ts";
+import { buildWords, transcribe, TranscribeAbortedError } from "../src/stages/transcribe.ts";
 import type { WhisperToken } from "../src/stages/transcribe.ts";
 import { DEFAULT_SILENCE_CUT_REASON } from "../src/lib/buildCutplan.ts";
 import { proxyFileName } from "../src/lib/proxyCache.ts";
@@ -199,6 +209,7 @@ export async function startEditor(
   // 書いた内容のハッシュ)との内容一致で除外する(時間窓ではない。§8.3)。
   // 連続イベント(エディタの書き込みは複数イベントになる)は少しまとめる
   const hub: EventHub = { clients: new Set() };
+  const renderJobRegistry: RenderJobRegistry = { current: null };
   let changed = new Set<string>();
   let notifyTimer: NodeJS.Timeout | null = null;
   let projectWatcher: FSWatcher | null = null;
@@ -230,7 +241,7 @@ export async function startEditor(
   }
 
   const server = createServer((req, res) => {
-    handle(req, res, dir, cfg, cfgPath, assets, hub, engineDevAssets, layout, canvas, baseLayout, launcherMode, watchProject).catch((err: Error) => {
+    handle(req, res, dir, cfg, cfgPath, assets, hub, renderJobRegistry, engineDevAssets, layout, canvas, baseLayout, launcherMode, watchProject).catch((err: Error) => {
       // HttpError は想定内の拒否(不正な保存=400、大きすぎる素材=413 等)。
       // それ以外は想定外なのでログに残して 500 で返す
       if (err instanceof HttpError) {
@@ -245,9 +256,9 @@ export async function startEditor(
       sendJson(res, 500, { error: err.message });
     });
   });
-  // レンダーは数分かかることがあり、その間 POST /api/render のレスポンスを
-  // 保留する。Node 既定の requestTimeout(5分)で接続が切れないよう無効化する
-  // (ローカル単一利用のツールなのでスローロリス対策は不要)
+  // レンダーは数分かかることがある。GUI の /api/jobs は即時 202 を返すが、
+  // 既存の重い処理が requestTimeout に巻き込まれないよう無効化しておく
+  // (ローカル単一利用のツールなのでスローロリス対策は不要)。
   server.requestTimeout = 0;
 
   const port = Number(process.env.PORT) || 4310;
@@ -333,6 +344,7 @@ export interface ProjectSummary {
   hasManifest: boolean;
   durationSec: number | null;
   canvas: string;
+  derivedFrom?: string;
   rendered: boolean;
   modifiedAt: string;
 }
@@ -382,11 +394,13 @@ export function listProjects(rootDir: string, rootKey: string): ProjectSummary[]
       const hasManifest = existsSync(manifestPath);
       let durationSec: number | null = null;
       let canvas = "landscape";
+      let derivedFrom: string | undefined;
       if (hasManifest) {
         try {
           const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Partial<Manifest>;
           durationSec = typeof manifest.durationSec === "number" ? manifest.durationSec : null;
           canvas = typeof manifest.canvas === "string" ? manifest.canvas : "landscape";
+          derivedFrom = typeof manifest.derivedFrom?.name === "string" ? manifest.derivedFrom.name : undefined;
         } catch {
           // 壊れた manifest もフォルダ自体は一覧から失わせない。
         }
@@ -397,6 +411,7 @@ export function listProjects(rootDir: string, rootKey: string): ProjectSummary[]
         hasManifest,
         durationSec,
         canvas,
+        ...(derivedFrom ? { derivedFrom } : {}),
         rendered: existsSync(join(projectDir, "final.mp4")),
         modifiedAt: statSync(projectDir).mtime.toISOString(),
       };
@@ -429,6 +444,33 @@ export function listProjectsAcrossRoots(roots: RecordingRoot[]): ProjectsRespons
     }
   }
   projects.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  const projectKeys = new Set(projects.map((p) => `${p.root}/${p.name}`));
+  const children = new Map<string, ProjectSummary[]>();
+  const topLevel: ProjectSummary[] = [];
+  for (const project of projects) {
+    const parentKey = project.derivedFrom ? `${project.root}/${project.derivedFrom}` : "";
+    if (parentKey && projectKeys.has(parentKey)) {
+      const list = children.get(parentKey) ?? [];
+      list.push(project);
+      children.set(parentKey, list);
+    } else {
+      topLevel.push(project);
+    }
+  }
+  const ordered: ProjectSummary[] = [];
+  const visited = new Set<string>();
+  const pushTree = (project: ProjectSummary) => {
+    const key = `${project.root}/${project.name}`;
+    if (visited.has(key)) return;
+    visited.add(key);
+    ordered.push(project);
+    for (const child of children.get(key) ?? []) pushTree(child);
+  };
+  for (const project of topLevel) pushTree(project);
+  for (const project of projects) {
+    if (!visited.has(`${project.root}/${project.name}`)) pushTree(project);
+  }
+  projects.splice(0, projects.length, ...ordered);
   return { roots: rootStatuses, projects };
 }
 
@@ -485,6 +527,10 @@ interface EventHub {
   clients: Set<ServerResponse>;
 }
 
+interface RenderJobRegistry {
+  current: RenderJob | null;
+}
+
 interface StoredProposal {
   proposalId: string;
   proposal: EditorAiStageProposeResponse;
@@ -520,6 +566,7 @@ async function handle(
   cfgPath: string,
   assets: MutableEditorClientAssets,
   hub: EventHub,
+  renderJobRegistry: RenderJobRegistry,
   engineDevAssets: EngineDevAssets,
   layout?: "obs-canvas" | "plain" | "auto" | "stills",
   initialCanvas?: string,
@@ -707,7 +754,7 @@ async function handle(
     return;
   }
   if (req.method === "GET" && path === "/api/events") {
-    // 編集 JSON の外部変更を流す SSE。切断まで開きっぱなしにする
+    // 編集 JSON の外部変更と書き出しジョブ状態を流す SSE。切断まで開きっぱなしにする
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-store",
@@ -722,10 +769,83 @@ async function handle(
     });
     return;
   }
+  if (req.method === "POST" && path === "/api/jobs") {
+    const body = await readBody(req) as { kind?: unknown };
+    if (body.kind !== "preview" && body.kind !== "render") {
+      throw new HttpError(400, "kind は preview / render のどちらかを指定してください");
+    }
+    const kind = body.kind;
+    const decision = jobStartDecision(
+      heavyJob
+        ? {
+            stage: heavyJob.stage,
+            kind: renderJobRegistry.current?.status === "running" ? renderJobRegistry.current.kind : null,
+          }
+        : null,
+      kind,
+    );
+    if (decision === "same" && renderJobRegistry.current) {
+      sendJson(res, 202, { job: renderJobRegistry.current });
+      return;
+    }
+    if (decision === "conflict" && heavyJob) {
+      throw new HttpError(409, `${jaStage(heavyJob.stage)}を実行中です。完了までお待ちください`);
+    }
+
+    const job: RenderJob = {
+      id: randomUUID(),
+      kind,
+      status: "running",
+      startedAt: new Date().toISOString(),
+    };
+    renderJobRegistry.current = job;
+    broadcastJob(hub, renderJobRegistry.current);
+    void runHeavyJob(kind, kind, () =>
+      kind === "preview" ? preview(dir, cfg) : render(dir, cfg),
+    )
+      .then((out) => {
+        renderJobRegistry.current = {
+          ...job,
+          status: "complete",
+          finishedAt: new Date().toISOString(),
+          output: out,
+        };
+        if (kind === "render") spawn("open", ["-R", out], { stdio: "ignore" }).on("error", () => {});
+      })
+      .catch((err: Error) => {
+        renderJobRegistry.current = {
+          ...job,
+          status: "failed",
+          finishedAt: new Date().toISOString(),
+          error: err.message,
+        };
+      })
+      .finally(() => broadcastJob(hub, renderJobRegistry.current));
+    sendJson(res, 202, { job });
+    return;
+  }
+  if (req.method === "GET" && path === "/api/jobs/active") {
+    const job = renderJobRegistry.current;
+    sendJson(res, 200, { job: job && (job.status === "queued" || job.status === "running") ? job : null });
+    return;
+  }
+  if (req.method === "GET" && path.startsWith("/api/jobs/")) {
+    const id = decodeURIComponent(path.slice("/api/jobs/".length));
+    if (renderJobRegistry.current?.id !== id) throw new HttpError(404, `知らないジョブです: ${id}`);
+    sendJson(res, 200, { job: renderJobRegistry.current });
+    return;
+  }
   if (req.method === "GET" && path === "/api/peaks") {
     const body = await getPeaks(dir, url.searchParams.get("file"));
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     res.end(body);
+    return;
+  }
+  if (req.method === "GET" && path === "/api/thumbstrip") {
+    const result = await ensureThumbstrip(dir, cfg);
+    sendJson(res, 200, "index" in result
+      ? { state: "ready", index: result.index }
+      : { state: "unavailable", reason: result.unavailable });
     return;
   }
   if (req.method === "GET" && path === "/api/media-facts") {
@@ -1166,28 +1286,27 @@ async function handle(
     sendJson(res, 200, { ok: true, path: out, proxyFile: proxyFileName(manifest) });
     return;
   }
-  if (req.method === "POST" && path === "/api/run") {
-    const body = (await readBody(req)) as { force?: unknown };
-    const force = body.force === true;
-    await runHeavyJob("run", "run", async () => {
-      await runDraft(dir, cfg, { force });
-    });
-    sendJson(res, 200, { ok: true });
-    return;
-  }
-  if (req.method === "POST" && (path === "/api/preview" || path === "/api/render")) {
-    // 承認後のプレビュー生成・最終レンダーを GUI から起動する
-    // (承認チェックはヘッダーにあるのに、これまでは実行だけターミナルへ
-    //  戻る必要があった)。proxy と同じく長時間サブプロセスを走らせ、
-    //  完了までレスポンスを保留する。preview / render は入力ファイル一式を
-    //  ディスクから読むので、クライアントは実行前に必ず保存(⌘S)する。
-    const stage = path === "/api/preview" ? "preview" : "render";
-    const out = await runHeavyJob(stage, stage, () =>
-      stage === "preview" ? preview(dir, cfg) : render(dir, cfg),
-    ) as string;
-    // レンダーは完成物を Finder で開いて教える(ターミナルへ戻らなくてよい)
-    if (stage === "render") spawn("open", ["-R", out], { stdio: "ignore" }).on("error", () => {});
-    sendJson(res, 200, { ok: true, path: out });
+  if (req.method === "POST" && path === "/api/analyze") {
+    // 開いた瞬間の自動解析(transcribe → detect)。plan は走らせない。
+    // runHeavyJob には乗せない: 数分かかる whisper が preview / render /
+    // AI 提案を全部 409 にしてしまい、「解析中も使える」目的が壊れるため。
+    const status = analysisStatus(dir, cfg);
+    if (status.blocked !== null) throw new HttpError(400, status.blocked);
+    if (!status.needed) {
+      // 既に文字起こし済み(別経路で完了した / 二重要求)。何もせず成功で返す
+      sendJson(res, 200, { ok: true, transcriptSkipped: true, silences: currentSilences(dir) });
+      return;
+    }
+    const jobDir = dir;
+    let job = analysisJobs.get(jobDir);
+    if (!job) {
+      job = runAnalysis(jobDir, cfg).finally(() => {
+        analysisJobs.delete(jobDir);
+      });
+      analysisJobs.set(jobDir, job);
+    }
+    const result = await job;
+    sendJson(res, 200, { ok: true, ...result });
     return;
   }
   if (req.method === "POST" && path === "/api/reveal") {
@@ -1238,6 +1357,70 @@ async function handle(
 
 /** proxy.* の生成(数十秒かかる)の実行中プロミス。二重生成の防止用 */
 let proxyBuilding: Promise<string> | null = null;
+
+/** 解析(transcribe → detect)の進行中ジョブ。ランチャーモードでは dir ごとに分ける。 */
+const analysisJobs = new Map<string, Promise<AnalyzeResult>>();
+
+export interface AnalyzeResult {
+  /** 実行中に人間が transcript.json を編集したため、文字起こし結果を破棄したか。 */
+  transcriptSkipped: boolean;
+  /** detect が書いた cuts.auto.json の無音区間。cuts.auto.json がまだ無いときだけ null。 */
+  silences: Interval[] | null;
+}
+
+/** 開いた瞬間の自動解析が必要か、または走れないかを判定する。 */
+export function analysisStatus(
+  dir: string,
+  cfg: Config,
+): { needed: boolean; blocked: string | null } {
+  if (!existsSync(join(dir, "manifest.json"))) return { needed: false, blocked: null };
+  if (!isBootstrapArtifact(join(dir, "transcript.json"))) {
+    return { needed: false, blocked: null };
+  }
+  if (!existsSync(cfg.whisper.model)) {
+    return {
+      needed: false,
+      blocked:
+        `文字起こしモデルが見つかりません: ${cfg.whisper.model}\n` +
+        "README のセットアップ手順でダウンロードすると、次に開いたときに自動で文字起こしします",
+    };
+  }
+  return { needed: true, blocked: null };
+}
+
+/** cuts.auto.json の無音区間を読む(無ければ null)。 */
+function currentSilences(dir: string): Interval[] | null {
+  const p = join(dir, "cuts.auto.json");
+  if (!existsSync(p)) return null;
+  try {
+    return (JSON.parse(readFileSync(p, "utf8")) as AutoCuts).silences;
+  } catch {
+    return null;
+  }
+}
+
+/** 開いた瞬間の自動解析。transcribe → id-stamp → detect の順に走らせる。 */
+async function runAnalysis(dir: string, cfg: Config): Promise<AnalyzeResult> {
+  let transcriptSkipped = false;
+  try {
+    await transcribe(dir, cfg, {
+      markUnadopted: true,
+      beforeWrite: () => {
+        if (!isBootstrapArtifact(join(dir, "transcript.json"))) {
+          throw new TranscribeAbortedError(
+            "文字起こし中に transcript.json が編集されたため、結果を破棄しました",
+          );
+        }
+      },
+    });
+  } catch (err) {
+    if (!(err instanceof TranscribeAbortedError)) throw err;
+    transcriptSkipped = true;
+  }
+  idStamp(dir); // 冪等。既に id があれば何も書かない
+  const cuts = await detect(dir, cfg);
+  return { transcriptSkipped, silences: cuts.silences };
+}
 
 export interface HyperframeCardSources {
   htmlByName: Record<string, string>;
@@ -1443,7 +1626,6 @@ export function ensureHyperframeAuthorNameAvailable(dir: string, name: string): 
 }
 
 export type HeavyJobStage =
-  | "run"
   | "preview"
   | "render"
   | "review"
@@ -1459,6 +1641,16 @@ export function saveHeavyJobDecision(stage: HeavyJobStage | null): SaveHeavyJobD
   return stage === "review" ? "cancel" : "reject";
 }
 
+/** POST /api/jobs を受けたときに、実行中の重いジョブから決まる応答。
+ * "start" = 開始してよい / "same" = 同じ job を返す / "conflict" = 409 */
+export function jobStartDecision(
+  running: { stage: HeavyJobStage; kind: JobKind | null } | null,
+  kind: JobKind,
+): "start" | "same" | "conflict" {
+  if (running === null) return "start";
+  return running.kind === kind && running.stage === kind ? "same" : "conflict";
+}
+
 /** 実行中の重いジョブ(preview / render / review)。同時に1つだけ走らせ、
  * 同じ key の二重起動はプロミスを共有、別 key は 409 で拒否する */
 let heavyJob:
@@ -1469,9 +1661,7 @@ const proposalStore = new Map<string, StoredProposal>();
 
 /** ジョブ名の日本語表記(409 メッセージ用) */
 const jaStage = (s: HeavyJobStage): string =>
-  s === "run"
-    ? "AI初版生成"
-    : s === "render"
+  s === "render"
     ? "レンダー"
     : s === "hyperframe-author"
       ? "AI素材の生成"
@@ -1482,6 +1672,13 @@ const jaStage = (s: HeavyJobStage): string =>
       : s === "propose"
         ? "AI提案生成"
         : "プレビュー生成";
+
+/** job の状態変化を SSE で全クライアントへ push する。
+ * ペイロードは { job } で、外部変更通知の { files } とはキーで区別する */
+function broadcastJob(hub: EventHub, job: RenderJob | null): void {
+  const payload = JSON.stringify({ job });
+  for (const c of hub.clients) c.write(`data: ${payload}\n\n`);
+}
 
 async function runHeavyJob<T>(
   stage: HeavyJobStage,
@@ -1886,6 +2083,7 @@ export function loadProject(dir: string, cfg: Config): ProjectData {
   } catch {
     proxyStale = true;
   }
+  const analysis = analysisStatus(dir, cfg);
   return {
     state: "ready",
     dir,
@@ -1894,7 +2092,6 @@ export function loadProject(dir: string, cfg: Config): ProjectData {
     cutplan,
     overlays: readJson<Overlays>("overlays.json", {}),
     contentHashes: contentHashesOf(dir),
-    runNeedsForce: rerunConflicts(dir, ["transcript.json", "cutplan.json", "chapters.json", "meta.json"]).length > 0,
     dirFiles,
     bgm: readJson<Bgm | null>("bgm.json", null),
     bgmFile: findBgm(dir),
@@ -1903,6 +2100,8 @@ export function loadProject(dir: string, cfg: Config): ProjectData {
     proxyFile,
     proxyExists,
     proxyStale,
+    analysisNeeded: analysis.needed,
+    analysisBlocked: analysis.blocked,
     renderCfg: designRenderCfg,
     ...editorDesignAssets(dir, cfg, manifest, designRenderCfg),
     previewCfg: { width: cfg.preview.width, videoEncoder: cfg.preview.videoEncoder, engine: cfg.preview.engine },
@@ -1994,8 +2193,10 @@ async function prepareEditorDesignAssets(dir: string, cfg: Config): Promise<void
 
 /** 波形の分解能(1秒あたりのピーク数)。16kHz なら 160 サンプル/ピーク */
 const PEAK_RATE = 100;
-/** ピークのキャッシュ(キー = 対象の相対パス。"" はマイク音声) */
+/** ピークのキャッシュ(キー = resolve(dir) + 対象の相対パス。"" はマイク音声) */
 const peaksCache = new Map<string, { key: string; body: string }>();
+const peaksInflight = new Map<string, Promise<string>>();
+let waveformIndexQueue: Promise<void> = Promise.resolve();
 
 /**
  * タイムラインの波形表示用に音声のピーク列を作る。
@@ -2005,10 +2206,12 @@ const peaksCache = new Map<string, { key: string; body: string }>();
  * ファイルは空のピークを返す=クライアントは波形を描かないだけ)
  */
 async function getPeaks(dir: string, rel: string | null): Promise<string> {
+  const resolvedDir = resolve(dir);
+  const source = rel ?? "";
   let abs: string;
   if (rel) {
     abs = normalize(join(dir, rel));
-    if (!abs.startsWith(resolve(dir) + sep) || !existsSync(abs)) {
+    if (!abs.startsWith(resolvedDir + sep) || !existsSync(abs)) {
       throw new Error(`not found: ${rel}`);
     }
   } else {
@@ -2018,17 +2221,49 @@ async function getPeaks(dir: string, rel: string | null): Promise<string> {
     abs = join(dir, manifest.audio.micWav);
   }
   const st = statSync(abs);
-  const key = `${abs}:${st.mtimeMs}:${st.size}`;
-  const hit = peaksCache.get(rel ?? "");
-  if (hit?.key === key) return hit.body;
+  const key: WaveformEntryKey = {
+    generation: WAVEFORM_GENERATION,
+    source,
+    mtimeMs: st.mtimeMs,
+    size: st.size,
+    rate: PEAK_RATE,
+  };
+  const cacheKey = `${resolvedDir}\0${source}`;
+  const keyString = JSON.stringify(key);
+  const hit = peaksCache.get(cacheKey);
+  if (hit?.key === keyString) return hit.body;
+
+  const pendingKey = `${cacheKey}\0${keyString}`;
+  const pending = peaksInflight.get(pendingKey);
+  if (pending) return await pending;
+
+  const promise = getPeaksUncached(dir, abs, rel, key).then((body) => {
+    peaksCache.set(cacheKey, { key: keyString, body });
+    return body;
+  }).finally(() => {
+    peaksInflight.delete(pendingKey);
+  });
+  peaksInflight.set(pendingKey, promise);
+  return await promise;
+}
+
+async function getPeaksUncached(
+  dir: string,
+  abs: string,
+  rel: string | null,
+  key: WaveformEntryKey,
+): Promise<string> {
+  const diskHit = readWaveformFromDisk(dir, key);
+  if (diskHit !== null) return diskHit;
 
   let body: string;
+  let cacheOnDisk = true;
   if (rel) {
     try {
       if (!hasAudioStream(abs)) {
         // 無音素材(HyperFrames カード等)。警告は出さない=正常系
         body = JSON.stringify({ rate: PEAK_RATE, durationSec: 0, peaks: "" });
-        peaksCache.set(rel ?? "", { key, body });
+        await writeWaveformToDisk(dir, key, body);
         return body;
       }
       const pcm = await decodeAudio(abs);
@@ -2037,13 +2272,117 @@ async function getPeaks(dir: string, rel: string | null): Promise<string> {
       // 音声ストリームなし・非対応コーデック等。波形なしとして扱う
       console.warn(`波形をデコードできません(${rel}): ${(e as Error).message}`);
       body = JSON.stringify({ rate: PEAK_RATE, durationSec: 0, peaks: "" });
+      cacheOnDisk = false;
     }
   } else {
-    const { sampleRate, channels, samples } = readWav(abs);
-    body = peaksBody(samples, sampleRate, channels);
+    try {
+      const { sampleRate, channels, samples } = readWav(abs);
+      body = peaksBody(samples, sampleRate, channels);
+    } catch (e) {
+      console.warn(`波形をデコードできません(マイク音声): ${(e as Error).message}`);
+      body = JSON.stringify({ rate: PEAK_RATE, durationSec: 0, peaks: "" });
+      cacheOnDisk = false;
+    }
   }
-  peaksCache.set(rel ?? "", { key, body });
+  if (cacheOnDisk) await writeWaveformToDisk(dir, key, body);
   return body;
+}
+
+function waveformIndexPath(dir: string): string {
+  return join(dir, "timeline.probe", "waveform.json");
+}
+
+function waveformBinDir(dir: string): string {
+  return join(dir, "timeline.probe", "waveform");
+}
+
+function emptyWaveformIndex(): WaveformIndex {
+  return { generation: WAVEFORM_GENERATION, entries: {} };
+}
+
+function readWaveformIndex(dir: string): WaveformIndex {
+  try {
+    const parsed = JSON.parse(readFileSync(waveformIndexPath(dir), "utf8")) as WaveformIndex;
+    if (parsed.generation !== WAVEFORM_GENERATION || !parsed.entries || typeof parsed.entries !== "object") {
+      return emptyWaveformIndex();
+    }
+    return parsed;
+  } catch {
+    return emptyWaveformIndex();
+  }
+}
+
+function readWaveformFromDisk(dir: string, key: WaveformEntryKey): string | null {
+  const index = readWaveformIndex(dir);
+  const entry = index.entries[key.source];
+  if (!isWaveformEntryFresh(entry, key)) return null;
+  if (typeof entry.durationSec !== "number" || typeof entry.bins !== "number" || entry.bins < 0) return null;
+  if (entry.bins === 0) return JSON.stringify({ rate: PEAK_RATE, durationSec: 0, peaks: "" });
+  const expectedFile = `timeline.probe/waveform/${waveformBinName(key)}`;
+  if (entry.file !== expectedFile) return null;
+  const binPath = join(dir, entry.file);
+  if (!existsSync(binPath)) return null;
+  try {
+    const bin = readFileSync(binPath);
+    if (bin.length !== entry.bins) return null;
+    return JSON.stringify({
+      rate: PEAK_RATE,
+      durationSec: entry.durationSec,
+      peaks: bin.toString("base64"),
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function writeWaveformToDisk(dir: string, key: WaveformEntryKey, body: string): Promise<void> {
+  const queued = waveformIndexQueue.catch(() => undefined).then(() => {
+    writeWaveformToDiskSync(dir, key, body);
+  });
+  waveformIndexQueue = queued.catch(() => undefined);
+  try {
+    await queued;
+  } catch (e) {
+    console.warn(`波形キャッシュを書き込めません: ${(e as Error).message}`);
+  }
+}
+
+function writeWaveformToDiskSync(dir: string, key: WaveformEntryKey, body: string): void {
+  const data = JSON.parse(body) as { durationSec: number; peaks: string };
+  const bin = data.peaks ? Buffer.from(data.peaks, "base64") : Buffer.alloc(0);
+  const bins = bin.length;
+  const root = join(dir, "timeline.probe");
+  const binDir = waveformBinDir(dir);
+  mkdirSync(binDir, { recursive: true });
+  const nextIndex = readWaveformIndex(dir);
+  if (nextIndex.generation !== WAVEFORM_GENERATION) {
+    nextIndex.generation = WAVEFORM_GENERATION;
+    nextIndex.entries = {};
+  }
+  let file: string | undefined;
+  if (bins > 0) {
+    const binName = waveformBinName(key);
+    file = `timeline.probe/waveform/${binName}`;
+    const finalBin = join(binDir, binName);
+    const tmpBin = `${finalBin}.tmp`;
+    writeFileSync(tmpBin, bin);
+    renameSync(tmpBin, finalBin);
+  }
+  nextIndex.entries[key.source] = {
+    key,
+    durationSec: data.durationSec,
+    bins,
+    ...(file ? { file } : {}),
+  };
+  const referenced = referencedBinNames(nextIndex);
+  for (const name of existsSync(binDir) ? readdirSync(binDir) : []) {
+    if (name.endsWith(".bin") && !referenced.has(name)) rmSync(join(binDir, name), { force: true });
+  }
+  const indexPath = waveformIndexPath(dir);
+  const tmpIndex = `${indexPath}.tmp`;
+  mkdirSync(root, { recursive: true });
+  writeFileSync(tmpIndex, `${JSON.stringify(nextIndex, null, 2)}\n`);
+  renameSync(tmpIndex, indexPath);
 }
 
 /**

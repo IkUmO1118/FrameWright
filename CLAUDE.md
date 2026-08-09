@@ -124,6 +124,9 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
   `motion.json` / `sound.json` / `motion.strip.png`。`materials.probe/` と
   同じく実行のたびの全消しはしない差分更新型で、同じ入力 key なら前回結果を
   再利用する) /
+  `timeline.probe/`(GUI エディタが書くタイムライン用の差分更新型キャッシュ。
+  `waveform.json` + `waveform/*.bin`、`thumbstrip.json` + `thumbstrip/*.webp` / `*.jpg`。
+  編集データではなく、削除しても次回エディタ表示で再生成される) /
   `material-fit.suggested.json`(`material-fit <dir>` が書く使い捨ての下書き。
   次回実行で黙って上書きされる。`rules.suggested.md` と同カテゴリだが中身は
   `apply --patch` にそのまま食わせられる ops 形式。**自分で `apply` しない**
@@ -553,7 +556,12 @@ node src/cli.ts editor <dir>      # 1プロジェクトを直接開くGUIエデ�
 node src/cli.ts editor <dir> --detach  # バックグラウンド起動でターミナルを返す(--status / --stop で確認・停止。待受情報とログは ~/.framewright/editor/)
 node src/cli.ts derive <dir> --name <name> --canvas portrait --range 120-165  # 元メディア/transcriptを共有し、指定source秒だけkeepする兄弟プロジェクトを作る
 node src/cli.ts mcp <dir>         # MCP サーバ(stdio。1収録フォルダに束縛。describe/validate/frames/materials/assert/apply/id-stamp だけを露出。承認/render/plan 等は露出しない)
+node src/cli.ts probe <dir> --all  # 素材/A-V の知覚をまとめて実行(--style は明示時のみ)
+node src/cli.ts draft <dir> --all  # cutplan/承認に触れず overlays/bgm の下書きをまとめて作る
+node src/cli.ts check <dir> --all  # 検品をまとめて実行。通常は編集ファイルを書かない
+node src/cli.ts check <dir> --all --fix  # suggested patch を id-stamp 後に安全適用
 node src/cli.ts run <dir>         # 収録直後の初回一括(再実行は --force 必須+backups/ へ退避。末尾で config の plan.cursor.autoZoom=true(既定)+cursorサイドカー有り+zooms空のときだけ autozoom を非破壊で自動実行)
+node src/cli.ts run <dir> --full  # 初版 + probe --all + draft --all(thumbnail は作らない)
 ```
 
 `mcp <dir>` は任意の MCP 対応エージェントにこの収録フォルダを機械的に

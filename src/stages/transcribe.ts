@@ -104,9 +104,27 @@ export function applyTranscriptIds(
  * manifest のマイク音声を whisper.cpp で文字起こしし、
  * transcript.json と transcript.srt を生成する。
  */
+export interface TranscribeOptions {
+  /** transcript.json を書き込む直前に呼ばれる。throw すると transcript.json /
+   * transcript.system.json を書かずに中断する。 */
+  beforeWrite?: () => void;
+  /** true なら generatedBy: "transcribe"(未採用)を付けて書く。エディタの
+   * 自動解析だけが渡す。CLI の transcribe / run は従来どおり採用済み扱い。 */
+  markUnadopted?: boolean;
+}
+
+/** beforeWrite フックが transcript.json の上書きを拒んだことを表す。 */
+export class TranscribeAbortedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TranscribeAbortedError";
+  }
+}
+
 export async function transcribe(
   dir: string,
   cfg: Config,
+  opts: TranscribeOptions = {},
 ): Promise<Transcript> {
   const manifest = JSON.parse(
     readFileSync(join(dir, "manifest.json"), "utf8"),
@@ -175,10 +193,12 @@ export async function transcribe(
     : shaped;
 
   const transcript: Transcript = {
+    ...(opts.markUnadopted ? { generatedBy: "transcribe" as const } : {}),
     language: cfg.whisper.language,
     model: cfg.whisper.model,
     segments: finalSegments,
   };
+  opts.beforeWrite?.();
   writeFileSync(
     join(dir, "transcript.json"),
     JSON.stringify(transcript, null, 2),

@@ -18,6 +18,12 @@ export interface Manifest {
   /** 作成時に固定するベース映像(画面/カメラ)の置き方。省略時 "auto"。
    *  camera / stack はカメラのある obs-canvas 収録でのみ有効。 */
   baseLayout?: string;
+  /** 同じ recordings root 直下の親プロジェクトから派生した場合の軽い由来情報。
+   * 絶対パスは持たず、フォルダ移動時は一覧側が同じ root 内の name で解決する。 */
+  derivedFrom?: {
+    name: string;
+    ranges: Interval[];
+  };
   video: {
     width: number;
     height: number;
@@ -67,8 +73,11 @@ export interface Region {
 /** transcribe が生成(transcript.json)。JSON Schema: schemas/transcript.schema.json
  * (スキーマを変えたらこのコメント・validate.ts・usage.md と揃える。§5点セット) */
 export interface Transcript {
-  /** 開くために決定論的に作った未編集の初期値。人間/AI が書けば消える。 */
-  generatedBy?: "bootstrap";
+  /** 機械が書いたまま人間がまだ手を入れていない印。
+   * "bootstrap" = editor が開くときに補った空文書。
+   * "transcribe" = 自動解析の文字起こし結果。テロップとしては描画しない。
+   * 人間か AI が transcript に触れた時点で消える(=採用)。 */
+  generatedBy?: "bootstrap" | "transcribe";
   language: string;
   model: string;
   segments: TranscriptSegment[];

@@ -39,10 +39,13 @@ import type {
   ThreeWayResult,
 } from "../../src/lib/docDiff.ts";
 import type { TimelineEntry } from "../../src/lib/timeline.ts";
+import { tileRefForSourceSec } from "../../src/lib/thumbstrip.ts";
+import type { ThumbstripLevel, ThumbTileRef } from "../../src/lib/thumbstrip.ts";
 import { isImageFile } from "../../src/lib/overlayFade.ts";
 import {
   CAPTION_DEFAULT_OUTLINE,
   DEFAULT_LAYER_ORDER,
+  DEFAULT_PLAYBACK_SPEED,
   capId,
   capNum,
   captionAnchorOf,
@@ -81,7 +84,9 @@ import type {
   DraftData,
   HyperframeCard,
   EmptyProjectData,
+  JobKind,
   ReadyProjectData,
+  RenderJob,
   ProjectSummary,
   RootStatus,
   SaveRequest,
@@ -227,6 +232,8 @@ import {
   deleteMaterial,
   fmtTime,
   parseTimecode,
+  getActiveJob,
+  getJob,
   getMediaFacts,
   getHyperframes,
   getPeaks,
@@ -234,16 +241,16 @@ import {
   getProjects,
   createProject,
   getScript,
+  getThumbstrip,
   postAiDoctor,
   postConfig,
   postDraft,
   postAiPropose,
   postAiRefine,
   postAiReview,
-  postPreview,
-  postRun,
+  postAnalyze,
   postProxy,
-  postRender,
+  postJob,
   postHyperframeRender,
   postHyperframeAuthor,
   postReveal,
@@ -264,6 +271,15 @@ type BlurEntry = NonNullable<Overlays["blurs"]>[number];
 type TextEntry = NonNullable<Overlays["texts"]>[number];
 type BgmEntry = NonNullable<Bgm["tracks"]>[number];
 type CaptionEntry = Transcript["segments"][number];
+const JOB_RESYNC_MS = 15000;
+/** スクラブが止まってから正確なフレームを要求するまで(ms)。 */
+const EXACT_DEBOUNCE_MS = 100;
+
+type ScrubPreviewState =
+  | { mode: "idle" }
+  | { mode: "approximate"; outputSec: number; tile: ThumbTileRef }
+  | { mode: "exact-pending"; outputSec: number; tile: ThumbTileRef }
+  | { mode: "exact" };
 
 /** クリップのコピー&ペースト(標準 NLE の a: クリップ複製)で持ち回る
  * スナップショット。中身ごと複製できるよう entry を丸ごと控える(元収録の
@@ -714,7 +730,7 @@ function LauncherApp() {
           const ready = project.hasManifest && project.durationSec !== null;
           return (
             <a
-              className="projectCard"
+              className={`projectCard${project.derivedFrom ? " derived" : ""}`}
               key={`${project.root}/${project.name}`}
               href={recordingRootMode() === "multi"
                 ? `/p/${encodeURIComponent(project.root)}/${encodeURIComponent(project.name)}/`
@@ -732,8 +748,10 @@ function LauncherApp() {
                   : <span className="projectCardTodo">メディア未選択</span>}
                 <span>{preset?.aspect ?? project.canvas}</span>
                 {roots.length > 1 && <span className="projectCardBadge">{project.root}</span>}
+                {project.derivedFrom && <span className="projectCardBadge">派生</span>}
                 {project.rendered && <span className="projectCardBadge">書き出し済み</span>}
               </span>
+              {project.derivedFrom && <span className="projectCardParent">親: {project.derivedFrom}</span>}
               <time>{new Date(project.modifiedAt).toLocaleString()}</time>
             </a>
           );
@@ -769,13 +787,16 @@ const EditorApp = () => {
   /** proxy.* の生成中か。busy と分けて、生成中(初回の数十秒)も
    * 編集・保存・アップロードを普通に受け付ける */
   const [proxyBusy, setProxyBusy] = useState(false);
+  /** 開いた瞬間の自動解析(文字起こし+無音検出)の実行中。 */
+  const [analysisBusy, setAnalysisBusy] = useState(false);
   /** GUI から起動した書き出しジョブ(preview / render)。running 中はボタンを
    * 無効化し、done で完了先を出す。null は非実行 */
   const [job, setJob] = useState<{
-    stage: "run" | "preview" | "render";
+    stage: JobKind;
     status: "running" | "done";
     path?: string;
   } | null>(null);
+  const jobToastRef = useRef<{ jobId: string; toastId: string } | null>(null);
   const [selection, setSelectionState] = useState<Selection>(null);
   const [playing, setPlaying] = useState(false);
   /** ループ再生(プレビューのみ。末尾まで行ったら先頭へ戻る) */
@@ -827,6 +848,9 @@ const EditorApp = () => {
   const peaksRequestedRef = useRef(new Set<string>());
   // EnginePreview が公開する再生操作 API。呼び出し側はこの小さな表面だけを使う。
   const playerRef = useRef<PreviewHandle>(null);
+  const [scrubPreview, setScrubPreview] = useState<ScrubPreviewState>({ mode: "idle" });
+  const exactTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exactTokenRef = useRef(0);
   /** プレビューの表示倍率(プレビューのみ。書き出し・合成には影響しない) */
   const [previewZoom, setPreviewZoom] = useState<"fit" | number>("fit");
   const [tab, setTab] = useState<PanelTab>("materials");
@@ -1022,6 +1046,8 @@ const EditorApp = () => {
    * /api/project には含まれない)。既定 {} = 全素材表示可能扱い(degrade)。
    * fetch 失敗時も {} のまま=警告なし(§design 8.2) */
   const [mediaCodecFacts, setMediaCodecFacts] = useState<Record<string, { codec: string; reason: string }>>({});
+  /** タイムライン映像フィルムストリップ。取得不能なら null のまま描かない。 */
+  const [thumbstrip, setThumbstrip] = useState<ThumbstripLevel | null>(null);
   /** HF palette は project payload と分離し、agent が source / MP4 を追加した
    * 変更にも保存競合なしで追随する。 */
   const [hyperframes, setHyperframes] = useState<HyperframeCard[]>([]);
@@ -1049,6 +1075,22 @@ const EditorApp = () => {
       .then((r) => setMediaCodecFacts(r.mediaCodecFacts))
       .catch(() => {}); // 失敗しても {} のまま(警告なしへ degrade)
   };
+  const refreshThumbstrip = useCallback(() => {
+    getThumbstrip()
+      .then((r) => setThumbstrip(r.state === "ready" ? r.index.levels[0] ?? null : null))
+      .catch((e: Error) => {
+        console.warn(`フィルムストリップを読み込めませんでした: ${e.message}`);
+        setThumbstrip(null);
+      });
+  }, []);
+  useEffect(() => {
+    if (!proj) {
+      setThumbstrip(null);
+      return;
+    }
+    setThumbstrip(null);
+    refreshThumbstrip();
+  }, [proj?.dir, refreshThumbstrip]);
   const refreshHyperframes = useCallback(async (visible = true) => {
     if (visible) setHyperframesLoading(true);
     try {
@@ -1363,6 +1405,63 @@ const EditorApp = () => {
   const reviewExternalRef = useRef(reviewExternalChange);
   reviewExternalRef.current = reviewExternalChange;
   const connectionToastRef = useRef<string | null>(null);
+  const showRunningJobToast = useCallback((serverJob: RenderJob): string => {
+    const existing = jobToastRef.current;
+    if (existing?.jobId === serverJob.id) return existing.toastId;
+    if (existing) dismissToast(existing.toastId);
+    const label = serverJob.kind === "render" ? "レンダー" : "プレビュー生成";
+    const toastId = addToast({
+      kind: "progress",
+      message:
+        `${label}中…` +
+        (serverJob.kind === "render" ? "(数分かかることがあります)" : ""),
+    });
+    jobToastRef.current = { jobId: serverJob.id, toastId };
+    return toastId;
+  }, [addToast, dismissToast]);
+  const applyJobUpdate = useCallback((serverJob: RenderJob | null) => {
+    if (serverJob === null) {
+      if (jobToastRef.current) {
+        dismissToast(jobToastRef.current.toastId);
+        jobToastRef.current = null;
+      }
+      setJob(null);
+      return;
+    }
+    if (serverJob.status === "running" || serverJob.status === "queued") {
+      setJob({ stage: serverJob.kind, status: "running" });
+      showRunningJobToast(serverJob);
+      return;
+    }
+    if (serverJob.status === "complete") {
+      const output = serverJob.output ?? "";
+      setJob({ stage: serverJob.kind, status: "done", path: output || undefined });
+      const fname = output.split("/").pop() ?? output;
+      const toastId = jobToastRef.current?.jobId === serverJob.id ? jobToastRef.current.toastId : null;
+      const nextToast = {
+        kind: "success" as const,
+        message: `${serverJob.kind === "render" ? "レンダー" : "プレビュー"}完了: ${fname || "出力完了"}`,
+        ...(output ? {
+          action: {
+            label: "開く",
+            onClick: () =>
+              postReveal(output).catch((e) => setError((e as Error).message)),
+          },
+        } : {}),
+        ttlMs: 6000,
+      };
+      if (toastId) updateToast(toastId, nextToast);
+      else addToast(nextToast);
+      jobToastRef.current = null;
+      return;
+    }
+    setError(serverJob.error ?? "書き出しに失敗しました");
+    setJob(null);
+    if (jobToastRef.current?.jobId === serverJob.id) {
+      dismissToast(jobToastRef.current.toastId);
+      jobToastRef.current = null;
+    }
+  }, [addToast, dismissToast, showRunningJobToast, updateToast]);
   useEffect(() => {
     const es = new EventSource(projectPath("/api/events"));
     es.onopen = () => {
@@ -1371,7 +1470,17 @@ const EditorApp = () => {
         connectionToastRef.current = null;
       }
     };
-    es.onmessage = () => {
+    es.onmessage = (ev) => {
+      let payload: { files?: string[]; job?: RenderJob | null } = {};
+      try {
+        payload = JSON.parse(ev.data) as typeof payload;
+      } catch {
+        payload = {};
+      }
+      if ("job" in payload) {
+        applyJobUpdate(payload.job ?? null);
+        return;
+      }
       if (dirtyRef.current) void reviewExternalRef.current();
       else void reloadRef.current();
     };
@@ -1385,7 +1494,30 @@ const EditorApp = () => {
       }
     };
     return () => es.close();
-  }, [addToast, dismissToast]);
+  }, [addToast, applyJobUpdate, dismissToast]);
+
+  useEffect(() => {
+    if (!proj) return;
+    void getActiveJob().then(({ job }) => {
+      if (job) applyJobUpdate(job);
+    }).catch(() => {});
+  }, [applyJobUpdate, proj?.dir]);
+
+  useEffect(() => {
+    if (job?.status !== "running") return;
+    const timer = setInterval(() => {
+      const current = jobToastRef.current;
+      const request = current ? getJob(current.jobId) : getActiveJob();
+      void request
+        .then(({ job }) => applyJobUpdate(job))
+        .catch((e: unknown) => {
+          // 404 = サーバー再起動などで registry が消えた。running を復元した
+          // ふりをせず、進捗トーストを畳んで idle へ戻す。
+          if (e instanceof ApiError && e.status === 404) applyJobUpdate(null);
+        });
+    }, JOB_RESYNC_MS);
+    return () => clearInterval(timer);
+  }, [applyJobUpdate, job?.status]);
 
   // error が立ったらエラートーストを出す。表示は TOAST_TTL_MS.error で自動消滅する
   // (×を押さなくても消える)。error state 自体は起動失敗の全画面(!proj)とプロキシ
@@ -1991,6 +2123,60 @@ const EditorApp = () => {
 
   const seekOut = (outT: number) =>
     playerRef.current?.seekTo(clamp(Math.round(outT * fps), 0, durationInFrames - 1));
+  const requestExactScrubFrame = useCallback((outT: number) => {
+    const token = ++exactTokenRef.current;
+    setScrubPreview((current) =>
+      current.mode === "approximate" || current.mode === "exact-pending"
+        ? { ...current, mode: "exact-pending", outputSec: outT }
+        : current,
+    );
+    const frame = clamp(Math.round(outT * fps), 0, durationInFrames - 1);
+    const player = playerRef.current;
+    if (!player) {
+      setScrubPreview({ mode: "exact" });
+      return;
+    }
+    void player.seekToAsync(frame).then(() => {
+      if (token === exactTokenRef.current) setScrubPreview({ mode: "exact" });
+    });
+  }, [durationInFrames, fps]);
+  const onScrubMove = useCallback((outT: number) => {
+    if (exactTimerRef.current) {
+      clearTimeout(exactTimerRef.current);
+      exactTimerRef.current = null;
+    }
+    const frame = clamp(Math.round(outT * fps), 0, durationInFrames - 1);
+    const player = playerRef.current;
+    if (player?.isPlaying()) {
+      exactTokenRef.current++;
+      setScrubPreview({ mode: "idle" });
+      player.seekTo(frame);
+      return;
+    }
+    const src = toSourceTime(clamp(outT, 0, Math.max(0, duration - 0.01)), timeline);
+    const tile = src !== null && thumbstrip ? tileRefForSourceSec(src, thumbstrip) : null;
+    if (!tile) {
+      exactTokenRef.current++;
+      setScrubPreview({ mode: "idle" });
+      player?.seekTo(frame);
+      return;
+    }
+    setScrubPreview({ mode: "approximate", outputSec: outT, tile });
+    exactTimerRef.current = setTimeout(() => {
+      exactTimerRef.current = null;
+      requestExactScrubFrame(outT);
+    }, EXACT_DEBOUNCE_MS);
+  }, [duration, durationInFrames, fps, requestExactScrubFrame, thumbstrip, timeline]);
+  const onScrubEnd = useCallback((outT: number) => {
+    if (exactTimerRef.current) {
+      clearTimeout(exactTimerRef.current);
+      exactTimerRef.current = null;
+    }
+    requestExactScrubFrame(outT);
+  }, [requestExactScrubFrame]);
+  useEffect(() => () => {
+    if (exactTimerRef.current) clearTimeout(exactTimerRef.current);
+  }, []);
   const togglePlay = () => {
     const p = playerRef.current;
     if (!p) return;
@@ -2060,13 +2246,21 @@ const EditorApp = () => {
 
   /* ---------------- タイムラインのクリップ ---------------- */
 
+  /** テロップとして採用済みの segments。未採用なら空。
+   * スクリプトタブ・AI 編集・選択の添字は transcript.segments のままなので、
+   * ここで置き換えるのは「タイムラインに出すクリップ」だけ。 */
+  const captionSegments = useMemo(
+    () => (!transcript || transcript.generatedBy === "transcribe" ? [] : transcript.segments),
+    [transcript],
+  );
+
   const clips = useMemo<Clip[]>(() => {
     if (!transcript || !built) return [];
     if (!cutplan || !overlays) return [];
     const cs: Clip[] = [];
     // テロップ: transcript.segments を直接編集する(index = segments の添字)。
     // セグメントのトラック番号 → caption / cap<N> トラックへ
-    transcript.segments.forEach((s, i) => {
+    captionSegments.forEach((s, i) => {
       const parts = remapInterval(s.start, s.end, timeline);
       parts.forEach((iv, j) => {
         cs.push({
@@ -2163,16 +2357,29 @@ const EditorApp = () => {
       if (s.action !== "keep") return;
       const parts = remapInterval(s.start, s.end, timeline);
       parts.forEach((iv, j) => {
+        const src = toSourceTime(iv.start, timeline);
+        const common = {
+          kind: "cut" as const,
+          index: i,
+          outStart: iv.start,
+          outEnd: iv.end,
+          label: `${s.start.toFixed(1)}s〜${s.end.toFixed(1)}s`,
+          editable: true,
+          noTrimStart: j > 0,
+          noTrimEnd: j < parts.length - 1,
+        };
         cs.push({
-          kind: "cut", index: i, track: "cut",
-          outStart: iv.start, outEnd: iv.end,
-          label: `${s.start.toFixed(1)}s〜${s.end.toFixed(1)}s`, editable: true,
-          noTrimStart: j > 0, noTrimEnd: j < parts.length - 1,
+          ...common,
+          track: "cut",
+          film: src !== null
+            ? { srcStart: src, speed: s.speed ?? DEFAULT_PLAYBACK_SPEED }
+            : undefined,
+        });
+        cs.push({
+          ...common,
+          track: "cutAudio",
           // 波形はマイク音声。keep クリップの中身は元収録と連続なので先頭の秒だけ持つ
-          wave: (() => {
-            const s = toSourceTime(iv.start, timeline);
-            return s !== null ? { src: "", startSec: s } : undefined;
-          })(),
+          wave: src !== null ? { src: "", startSec: src } : undefined,
         });
       });
     });
@@ -2182,12 +2389,22 @@ const EditorApp = () => {
     insertSpans(keeps, inserts).forEach((sp) => {
       const ins = inserts[sp.index];
       const fileName = ins.file.split(/[\\/]/).pop() ?? ins.file;
-      cs.push({
-        kind: "insert", index: sp.index, track: "cut",
-        outStart: sp.start, outEnd: sp.end,
+      const common = {
+        kind: "insert" as const,
+        index: sp.index,
+        outStart: sp.start,
+        outEnd: sp.end,
         label: fileName,
-        mediaKind: isImageFile(ins.file) ? "image" : "video",
         editable: true,
+      };
+      cs.push({
+        ...common,
+        track: "cut",
+        mediaKind: isImageFile(ins.file) ? "image" : "video",
+      });
+      cs.push({
+        ...common,
+        track: "cutAudio",
         wave: { src: ins.file, startSec: ins.startFrom ?? 0 },
       });
     });
@@ -2228,7 +2445,7 @@ const EditorApp = () => {
     }
     return cs;
   }, [
-    cutplan, overlays, transcript, bgm, built, timeline, duration, proj?.bgmFile,
+    cutplan, overlays, transcript, bgm, built, timeline, duration, proj?.bgmFile, captionSegments,
   ]);
 
   /** ステッカー/エフェクト タブからドラッグ中のプリセット。null = ドラッグしていない。
@@ -2342,6 +2559,7 @@ const EditorApp = () => {
     return timelineTracks.filter(
       (t) =>
         t.id === "cut" ||
+        t.id === "cutAudio" ||
         (t.id === "wipe" && proj?.hasCamera !== false) ||
         occupied.has(t.id) ||
         hasDiff.has(t.id) ||
@@ -2703,13 +2921,12 @@ const EditorApp = () => {
   /** テロップごとのカット後の表示区間(編集時だけ再計算)。再生中の
    * 「いま表示中か」の判定を毎フレーム軽く済ませるための前計算 */
   const captionIntervals = useMemo(() => {
-    if (!transcript) return [];
-    return transcript.segments.map((s, i) => ({
+    return captionSegments.map((s, i) => ({
       index: i,
       empty: s.text.trim().length === 0,
       ivs: remapInterval(s.start, s.end, timeline),
     }));
-  }, [transcript, timeline]);
+  }, [captionSegments, timeline]);
 
   /** outT に表示中のテロップの添字列(LiveCaptionOverlay の購読キー)。
    * キーが変わったとき=表示中の組が入れ替わったときだけ本体を作り直す */
@@ -5026,6 +5243,7 @@ const EditorApp = () => {
         proxyExists: true,
       });
       setVideoVersion((v) => v + 1);
+      refreshThumbstrip();
       return true;
     } catch (e) {
       setError((e as Error).message);
@@ -5043,11 +5261,53 @@ const EditorApp = () => {
     }
   };
 
+  /** 開いた瞬間の自動解析。transcript の更新は SSE 経由、silences だけレスポンスで反映する。 */
+  const runAnalysis = async (): Promise<void> => {
+    setAnalysisBusy(true);
+    const toastId = addToast({
+      kind: "progress",
+      message: "文字起こし中…(終わると AI 編集が使えます。この間も編集・保存はできます)",
+    });
+    try {
+      const out = await postAnalyze();
+      setProj((p) => p && { ...p, analysisNeeded: false, silences: out.silences });
+      updateToast(toastId, {
+        kind: "success",
+        message: out.transcriptSkipped
+          ? "文字起こし中にテロップが編集されたため、手編集を残して結果を破棄しました"
+          : "文字起こしが終わりました。AI 編集を使えます",
+        ttlMs: 6000,
+      });
+    } catch (e) {
+      updateToast(toastId, {
+        kind: "error",
+        message: `文字起こしに失敗しました: ${(e as Error).message}`,
+        ttlMs: 0,
+        action: { label: "再試行", onClick: () => { void runAnalysis(); } },
+      });
+    } finally {
+      setAnalysisBusy(false);
+    }
+  };
+
+  /** 自動解析が書いた transcript(未採用)をテロップとして採用する。
+   * マーカーを外すだけ = ⌘Z で戻せる。実体の書き込みは通常の保存。 */
+  const adoptCaptions = () => {
+    if (!transcript || transcript.generatedBy !== "transcribe") return;
+    pushHistory();
+    setTranscript((t) => {
+      if (!t) return t;
+      const next = { ...t };
+      delete next.generatedBy;
+      return next;
+    });
+  };
+
   /** 書き出し(preview / render)を GUI から起動する。preview / render は
    * ディスクの JSON を読むので、未保存の編集があれば先に保存してから走らせる
    * (承認チェックも cutplan の一部なので、これでディスクへ反映される)。
    * render は approved: true が要る(サーバー側でも承認ゲートで弾かれる) */
-  const runExport = async (stage: "preview" | "render") => {
+  const runExport = async (stage: JobKind) => {
     if (job?.status === "running") return;
     setError(null);
     if (anyDirty) {
@@ -5061,72 +5321,12 @@ const EditorApp = () => {
         setBusy(null);
       }
     }
-    setJob({ stage, status: "running" });
-    // 実行中は progress トーストを1枚。完了時に updateToast で success へ差し替え
-    // (消して出し直さない=積み位置が飛ばない)。id はこのクロージャ内で完結する
-    const label = stage === "render" ? "レンダー" : "プレビュー生成";
-    const toastId = addToast({
-      kind: "progress",
-      message:
-        `${label}中…` +
-        (stage === "render" ? "(数分かかることがあります)" : ""),
-    });
     try {
-      const res = stage === "preview" ? await postPreview() : await postRender();
-      setJob({ stage, status: "done", path: res.path });
-      const fname = res.path.split("/").pop() ?? res.path;
-      updateToast(toastId, {
-        kind: "success",
-        message: `${stage === "render" ? "レンダー" : "プレビュー"}完了: ${fname}`,
-        action: {
-          label: "開く",
-          onClick: () =>
-            postReveal(res.path).catch((e) => setError((e as Error).message)),
-        },
-        ttlMs: 6000,
-      });
+      const { job } = await postJob(stage);
+      applyJobUpdate(job);
     } catch (e) {
       setError((e as Error).message); // エラートーストは error の effect が出す
       setJob(null);
-      dismissToast(toastId); // progress トーストは畳む(表示は error トーストへ委ねる)
-    }
-  };
-
-  /** AI 初版生成。bootstrap のままなら確認なし、手編集があれば明示確認して
-   * 保存→backups 退避付き force 実行にする。多重起動は client/server 両方で抑止。 */
-  const runInitialDraft = async () => {
-    if (job?.status === "running" || !proj) return;
-    const needsForce = proj.runNeedsForce || anyDirty;
-    if (needsForce && !window.confirm(
-      "手編集した内容が AI の生成物で上書きされます。実行前に backups/ へ退避します",
-    )) return;
-    setError(null);
-    if (anyDirty) {
-      setBusy("save");
-      try {
-        await save();
-      } catch (e) {
-        setError((e as Error).message);
-        return;
-      } finally {
-        setBusy(null);
-      }
-    }
-    setJob({ stage: "run", status: "running" });
-    const toastId = addToast({
-      kind: "progress",
-      message: "AI が初版を生成中…(文字起こしと編集案の作成に時間がかかります)",
-    });
-    try {
-      await postRun(needsForce);
-      const next = await getProject();
-      if (next.state === "ready") acceptReadyProject(next);
-      setJob(null);
-      updateToast(toastId, { kind: "success", message: "AI の初版ができました", ttlMs: 6000 });
-    } catch (e) {
-      setError((e as Error).message);
-      setJob(null);
-      dismissToast(toastId);
     }
   };
 
@@ -5139,6 +5339,15 @@ const EditorApp = () => {
     if (!proj || proj.proxyExists || proxyKickedRef.current) return;
     proxyKickedRef.current = true;
     void generateProxy();
+  }, [proj]);
+
+  // transcript.json が bootstrap の初期値のままなら、開いた時点で文字起こしと
+  // 無音検出を始める。plan は走らせない。
+  const analysisKickedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!proj || !proj.analysisNeeded || analysisKickedRef.current.has(proj.dir)) return;
+    analysisKickedRef.current.add(proj.dir);
+    void runAnalysis();
   }, [proj]);
 
   /* ---------------- 左パネル(タブ・分割バー) ---------------- */
@@ -5996,15 +6205,19 @@ const EditorApp = () => {
               variant={aiEditEnabled ? "default" : "secondary"}
               size="sm"
               className={`aiCommandLauncher${aiEditEnabled ? " on" : ""}`}
-              disabled={aiWorkflowLocked}
+              disabled={aiWorkflowLocked || analysisBusy}
               title={
                 aiWorkflowLocked
                   ? aiWorkflowTitle
-                  : aiEditEnabled
-                    ? "AI編集モードを終了"
-                    : anyDirty
-                      ? "保存してから AI 一発編集"
-                      : "AI 一発編集を開く"
+                  : analysisBusy
+                    ? "文字起こし中です。終わると AI 編集を使えます"
+                    : proj.analysisBlocked !== null
+                      ? proj.analysisBlocked
+                      : aiEditEnabled
+                        ? "AI編集モードを終了"
+                        : anyDirty
+                          ? "保存してから AI 一発編集"
+                          : "AI 一発編集を開く"
               }
               onClick={() => {
                 if (aiEditEnabled) {
@@ -6030,11 +6243,15 @@ const EditorApp = () => {
           <TooltipContent>
             {aiWorkflowLocked
               ? aiWorkflowTitle
-              : aiEditEnabled
-                ? "AI編集モードを終了"
-                : anyDirty
-                  ? "保存してから AI 一発編集"
-                  : "AI 一発編集を開く"}
+              : analysisBusy
+                ? "文字起こし中です。終わると AI 編集を使えます"
+                : proj.analysisBlocked !== null
+                  ? proj.analysisBlocked
+                  : aiEditEnabled
+                    ? "AI編集モードを終了"
+                    : anyDirty
+                      ? "保存してから AI 一発編集"
+                      : "AI 一発編集を開く"}
           </TooltipContent>
         </Tooltip>
         {/* レイアウト切替(VSCode 風)。アイコンの塗られた面 = 表示中のパネル。
@@ -6119,16 +6336,6 @@ const EditorApp = () => {
             </fieldset>
           </PopoverContent>
         </Popover>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={job?.status === "running" || busy !== null}
-          title="文字起こし・無音検出・編集案をまとめて生成する"
-          onClick={() => void runInitialDraft()}
-        >
-          <Sparkles size={14} aria-hidden />
-          AI に初版を作らせる
-        </Button>
         <Popover open={exportOpen} onOpenChange={setExportOpen}>
           <PopoverTrigger asChild>
             <Button
@@ -6304,16 +6511,18 @@ const EditorApp = () => {
             <TabsContent value="selection" className="aiScopePanel">現在選択している要素を対象にします。</TabsContent>
             </Tabs>
             <AiCommand
-              disabled={anyDirty || aiWorkflowLocked}
+              disabled={anyDirty || aiWorkflowLocked || analysisBusy}
               busy={aiBusy}
               multiline
               modalStyle
               disabledReason={
-                anyDirty
-                  ? "保存してから AI 一発編集"
-                  : aiWorkflowLocked
-                    ? "AI 一発編集を確認中"
-                    : undefined
+                analysisBusy
+                  ? "文字起こし中です。終わると AI 編集を使えます"
+                  : anyDirty
+                    ? "保存してから AI 一発編集"
+                    : aiWorkflowLocked
+                      ? "AI 一発編集を確認中"
+                      : undefined
               }
               placeholder={
                 aiCommandScope === "global"
@@ -6522,21 +6731,26 @@ const EditorApp = () => {
               <>
                 <PanelHeader
                   title="テロップ"
-                  actions={(
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="ocMaterialImport"
-                      onClick={() => addAtPlayhead("caption")}
-                    >
-                      <Plus size={13} strokeWidth={1.75} aria-hidden />
-                      追加
-                    </Button>
-                  )}
+                  actions={transcript.generatedBy === "transcribe"
+                    ? null
+                    : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="ocMaterialImport"
+                        onClick={() => addAtPlayhead("caption")}
+                      >
+                        <Plus size={13} strokeWidth={1.75} aria-hidden />
+                        追加
+                      </Button>
+                    )}
                 />
                 <CaptionsPanel
-                  transcript={transcript}
+                  captionSegments={captionSegments}
                   overlays={overlays}
+                  captionsAdoptable={transcript.generatedBy === "transcribe"}
+                  captionsAdoptionDisabled={analysisBusy}
+                  onAdoptCaptions={adoptCaptions}
                   selectedIndex={selection?.kind === "caption" ? selection.index : null}
                   multiSelected={capMulti}
                   onRowClick={(i) => selectCaption(i, true)}
@@ -6641,6 +6855,21 @@ const EditorApp = () => {
                 baseAudioFile={`media/${proj.proxyFile}`}
                 onFallback={setEngineFailure}
               />
+              {scrubPreview.mode !== "idle" && scrubPreview.mode !== "exact" && (
+                <div
+                  className="scrubApprox"
+                  aria-hidden="true"
+                  style={{
+                    backgroundImage: `url(${projectPath(`/media/${scrubPreview.tile.file}`)})`,
+                    backgroundSize: `${scrubPreview.tile.columns * 100}% ${scrubPreview.tile.rows * 100}%`,
+                    backgroundPosition: `${
+                      (scrubPreview.tile.col / (scrubPreview.tile.columns - 1 || 1)) * 100
+                    }% ${
+                      (scrubPreview.tile.row / (scrubPreview.tile.rows - 1 || 1)) * 100
+                    }%`,
+                  }}
+                />
+              )}
               {/* 素材(部分配置)の移動・リサイズ枠。テロップ枠より下(DOM 前)に
                   置き、重なったときはテロップのドラッグを優先させる */}
               <LiveMaterialOverlay
@@ -7086,11 +7315,14 @@ const EditorApp = () => {
         clips={clips}
         cutMarks={cutMarks}
         peaks={peaksMap}
+        thumbstrip={thumbstrip}
         tracks={visibleTracks}
         selection={selection}
         multiCaption={capMulti}
         onToggleCaptionSel={toggleCaptionMulti}
-        onSeek={seekOut}
+        onSeek={(t) => playhead.set(t)}
+        onScrubMove={onScrubMove}
+        onScrubEnd={onScrubEnd}
         onSelect={setSelection}
         onSelectTrackHeader={(track) => {
           if (track === "wipe") setSelection({ kind: "wipe", index: 0 });

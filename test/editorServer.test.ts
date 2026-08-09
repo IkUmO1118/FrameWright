@@ -11,6 +11,7 @@ import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  analysisStatus,
   buildAiReviewCandidateFromStoredProposal,
   buildHyperframeCards,
   loadProject,
@@ -23,6 +24,7 @@ import {
   validateRefineRequest,
   validateHyperframeRenderRequest,
   validateReviewRequest,
+  jobStartDecision,
   saveHeavyJobDecision,
 } from "../editor/server.ts";
 import { ID_RE } from "../src/lib/ids.ts";
@@ -44,7 +46,6 @@ test("saveHeavyJobDecision: review だけ中止して保存を通す", () => {
   assert.equal(saveHeavyJobDecision(null), "allow");
   assert.equal(saveHeavyJobDecision("review"), "cancel");
   for (const stage of [
-    "run",
     "preview",
     "render",
     "propose",
@@ -53,6 +54,61 @@ test("saveHeavyJobDecision: review だけ中止して保存を通す", () => {
   ] as const) {
     assert.equal(saveHeavyJobDecision(stage), "reject", stage);
   }
+});
+
+test("jobStartDecision: 何も走っていなければ開始する", () => {
+  assert.equal(jobStartDecision(null, "render"), "start");
+  assert.equal(jobStartDecision(null, "preview"), "start");
+});
+
+test("jobStartDecision: 同種のジョブが走っていれば同じ job を返す", () => {
+  assert.equal(jobStartDecision({ stage: "render", kind: "render" }, "render"), "same");
+  assert.equal(jobStartDecision({ stage: "preview", kind: "preview" }, "preview"), "same");
+});
+
+test("jobStartDecision: 別種の書き出しは 409", () => {
+  assert.equal(jobStartDecision({ stage: "preview", kind: "preview" }, "render"), "conflict");
+  assert.equal(jobStartDecision({ stage: "render", kind: "render" }, "preview"), "conflict");
+});
+
+test("jobStartDecision: 書き出し以外の重いジョブ中も 409", () => {
+  for (const stage of [
+    "propose",
+    "review",
+    "hyperframe-render",
+    "hyperframe-author",
+  ] as const) {
+    assert.equal(jobStartDecision({ stage, kind: null }, "render"), "conflict", stage);
+    assert.equal(jobStartDecision({ stage, kind: null }, "preview"), "conflict", stage);
+  }
+});
+
+test("analysisStatus: bootstrap の transcript だけを解析対象にする", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fw-analyze-"));
+  const cfg = { whisper: { model: join(dir, "model.bin") } } as unknown as Config;
+  writeFileSync(join(dir, "model.bin"), "x");
+
+  assert.deepEqual(analysisStatus(dir, cfg), { needed: false, blocked: null });
+
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ durationSec: 10 }));
+  writeFileSync(join(dir, "transcript.json"), JSON.stringify({ generatedBy: "bootstrap", segments: [] }));
+  assert.equal(analysisStatus(dir, cfg).needed, true);
+
+  writeFileSync(join(dir, "transcript.json"), JSON.stringify({ language: "ja", model: "m", segments: [] }));
+  assert.equal(analysisStatus(dir, cfg).needed, false);
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("analysisStatus: whisper モデルが無ければ needed=false で理由を返す", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fw-analyze-"));
+  const cfg = { whisper: { model: join(dir, "missing.bin") } } as unknown as Config;
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ durationSec: 10 }));
+  writeFileSync(join(dir, "transcript.json"), JSON.stringify({ generatedBy: "bootstrap", segments: [] }));
+  const status = analysisStatus(dir, cfg);
+  assert.equal(status.needed, false);
+  assert.match(status.blocked ?? "", /文字起こしモデルが見つかりません/);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 const authorProfile = (overrides: Partial<AiProfileStatus> = {}): AiProfileStatus => ({

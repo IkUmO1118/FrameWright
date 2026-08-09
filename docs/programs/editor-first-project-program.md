@@ -143,6 +143,7 @@ whisper も LLM も呼ばない。つまり「`run` を打たないとエディ�
 | P6 | `2026-08-02-editor-first-p6-canvas-two-axis-design.md` | IMPLEMENTED | キャンバスの2軸分離(サイズ / ベース映像の置き方) |
 | P7 | `2026-08-03-editor-first-p7-obs-canvas-cost-design.md` | IMPLEMENTED(④(a) は §P8 §1 の理由で打ち切り) | obs-canvas のコスト整理(ガード・露出縮小・高速パス計測) |
 | P8 | `2026-08-03-editor-first-p8-burnwipe-removal-design.md` | IMPLEMENTED | ワイプ焼き込み高速パスの削除 |
+| P9 | `2026-08-07-editor-open-analysis-design.md` | IMPLEMENTED | エディタ起動時の自動解析 + 旧 run ボタン削除 |
 
 各段の概要は以下。**詳細は必ず plan を正とする**(以下は要約)。
 

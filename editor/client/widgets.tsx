@@ -14,12 +14,16 @@ import type {
   AiRefineResponse,
   AiReviewRequest,
   AiReviewResponse,
+  AnalyzeResponse,
   AiDoctorResult,
   ConfigSaveResult,
   DraftData,
   HyperframeAuthorResponse,
   HyperframeRenderResponse,
   HyperframesData,
+  JobActiveResponse,
+  JobKind,
+  JobStartResponse,
   MediaFactsData,
   PeaksData,
   ProjectData,
@@ -29,6 +33,7 @@ import type {
   SaveRequest,
   SaveResponse,
   ScriptData,
+  ThumbstripData,
   UploadResult,
 } from "./apiTypes.ts";
 import { projectPath } from "./route.ts";
@@ -160,6 +165,12 @@ export async function getPeaks(file?: string): Promise<Peaks> {
   return { rate: res.rate, data };
 }
 
+/** タイムラインのフィルムストリップ index。生成不能でも例外にせず
+ * state: "unavailable" が返る(呼び出し側は描かないだけ) */
+export async function getThumbstrip(): Promise<ThumbstripData> {
+  return (await request("/api/thumbstrip", undefined)) as ThumbstripData;
+}
+
 export async function postSave(body: SaveRequest): Promise<SaveResponse> {
   return (await request("/api/save", body)) as SaveResponse;
 }
@@ -198,27 +209,30 @@ export async function postProxy(): Promise<ProxyResponse> {
   return (await request("/api/proxy", {})) as ProxyResponse;
 }
 
+/** 開いた瞬間の自動解析(transcribe → detect)。plan は走らない。 */
+export async function postAnalyze(): Promise<AnalyzeResponse> {
+  return (await request("/api/analyze", {})) as AnalyzeResponse;
+}
+
 /** 設定画面の保存。config.yaml の該当キーを書き換え(コメント保持)、
  * サーバー内の設定にも即反映される。戻り値は解決済みの新しい設定 */
 export async function postConfig(patch: ConfigPatch): Promise<ConfigSaveResult> {
   return (await request("/api/config", patch)) as ConfigSaveResult;
 }
 
-/** カット確認用プレビュー(preview.mp4)の生成。完了までに時間がかかる。
- * 入力はディスクの JSON を読むので、呼ぶ前に保存しておくこと */
-export async function postPreview(): Promise<{ path: string }> {
-  return (await request("/api/preview", {})) as { path: string };
+/** 書き出しジョブの開始。202 で即座に返り、完了は SSE / GET で追う */
+export async function postJob(kind: JobKind): Promise<JobStartResponse> {
+  return (await request("/api/jobs", { kind })) as JobStartResponse;
 }
 
-/** AI に初版(transcribe→detect→plan)を作らせる。 */
-export async function postRun(force: boolean): Promise<void> {
-  await request("/api/run", { force });
+/** 実行中のジョブ。reload 復帰に使う */
+export async function getActiveJob(): Promise<JobActiveResponse> {
+  return (await request("/api/jobs/active", undefined)) as JobActiveResponse;
 }
 
-/** 最終レンダー(final.mp4)。approved: true が必要で、数分かかることがある。
- * 入力はディスクの JSON を読むので、呼ぶ前に保存しておくこと */
-export async function postRender(): Promise<{ path: string }> {
-  return (await request("/api/render", {})) as { path: string };
+/** 直近ジョブの状態。SSE を取り逃したときの低頻度再同期に使う */
+export async function getJob(id: string): Promise<JobStartResponse> {
+  return (await request(`/api/jobs/${encodeURIComponent(id)}`, undefined)) as JobStartResponse;
 }
 
 /** 出力先(final.mp4 / preview.mp4 等)を Finder で開き直す。完了トーストの

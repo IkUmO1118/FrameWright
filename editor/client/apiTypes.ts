@@ -17,6 +17,7 @@ import type { FrameShot } from "../../src/stages/frames.ts";
 import type { ReviewBundle, ReviewKey } from "../../src/stages/review.ts";
 import type { PreparedDesignAssets } from "../../src/lib/design.ts";
 import type { SourceCandidate } from "../../src/lib/findSource.ts";
+import type { ThumbstripIndex } from "../../src/lib/thumbstrip.ts";
 export type {
   AiProposeRequest,
   AiScope,
@@ -115,6 +116,10 @@ export interface ReadyProjectData {
    * エンコーダ)か元収録ファイルと食い違っている(古い)か。proxyExists が
    * false のときは常に false(未生成であって陳腐化ではない) */
   proxyStale: boolean;
+  /** 開いた瞬間の自動解析(transcribe → detect)が必要か。 */
+  analysisNeeded: boolean;
+  /** 自動解析が走れない理由(whisper モデル不在など)。null なら障害なし。 */
+  analysisBlocked: string | null;
   renderCfg: Config["render"];
   /** server が現在の design key と全 PNG の存在を検証した静的資産 */
   designAssets?: PreparedDesignAssets;
@@ -142,8 +147,6 @@ export interface ReadyProjectData {
    *  client は不透明 token として保持し save 時に baseHashes として echo する
    *  (再計算はしない)。 */
   contentHashes: Record<string, string>;
-  /** AI 初版生成が手編集を上書きするため確認と backups 退避を要するか。 */
-  runNeedsForce: boolean;
 }
 
 export type ProjectData = EmptyProjectData | ReadyProjectData;
@@ -155,6 +158,7 @@ export interface ProjectSummary {
   durationSec: number | null;
   canvas: string;
   baseLayout?: string;
+  derivedFrom?: string;
   rendered: boolean;
   modifiedAt: string;
 }
@@ -169,6 +173,27 @@ export interface ProjectsResponse {
   roots: RootStatus[];
   projects: ProjectSummary[];
 }
+
+export type JobKind = "preview" | "render";
+
+/** 書き出しジョブ(editor-perf P4)。サーバープロセス内にだけ存在し、
+ * サーバー再起動で消える(実行中の子プロセスへ再接続はできないため) */
+export interface RenderJob {
+  id: string;
+  kind: JobKind;
+  status: "queued" | "running" | "complete" | "failed";
+  /** ISO 8601 */
+  startedAt: string;
+  finishedAt?: string;
+  /** 成功時の出力パス(収録フォルダ内の絶対パス) */
+  output?: string;
+  /** 失敗時の理由(人間向け日本語) */
+  error?: string;
+}
+
+export interface JobStartRequest { kind: JobKind }
+export interface JobStartResponse { job: RenderJob }
+export interface JobActiveResponse { job: RenderJob | null }
 
 export type PlanPerceptionStatus = PerceptionStatus;
 
@@ -239,6 +264,14 @@ export interface ProxyResponse {
   proxyFile: ReadyProjectData["proxyFile"];
 }
 
+export interface AnalyzeResponse {
+  ok: true;
+  /** 実行中に人間が transcript.json を編集したため文字起こし結果を破棄した。 */
+  transcriptSkipped: boolean;
+  /** detect が書いた無音区間。ProjectReady.silences をこれで置き換える。 */
+  silences: Interval[] | null;
+}
+
 /** POST /api/draft のボディ = .editor-draft.json の中身。未保存の編集を
  * クラッシュ・強制終了から守るための自動退避で、正のデータ(各 JSON)には
  * 保存(⌘S)まで触らない。保存が成功したら削除される */
@@ -261,6 +294,12 @@ export interface PeaksData {
   /** ピーク列(各 0..255、全体の最大値で正規化)のバイト列を base64 で */
   peaks: string;
 }
+
+/** GET /api/thumbstrip のレスポンス。生成不能でも 200 + unavailable を返す
+ * (エディタは thumbstrip 無しで普通に動くので 4xx にしない) */
+export type ThumbstripData =
+  | { state: "ready"; index: ThumbstripIndex }
+  | { state: "unavailable"; reason: string };
 
 /** GET /api/media-facts のレスポンス。動画素材(materials/ の mp4/mov/webm)
  * ごとの codec 由来のブラウザ表示可否(§design 8.2)。/api/project に含めない

@@ -401,6 +401,12 @@ export function validateDocs(
       err(f, "segments", "配列ではありません");
     } else {
       counts.captions = transcript.segments.length;
+      if (transcript.generatedBy === "transcribe" && transcript.segments.length > 0) {
+        warn(
+          f, "-",
+          "文字起こしはあるがテロップとして未採用です(このままレンダーするとテロップは出ません)",
+        );
+      }
       transcript.segments.forEach((s: unknown, i: number) => {
         const w = `segments[${i}]`;
         if (!isObj(s)) return err(f, w, "オブジェクトではありません");

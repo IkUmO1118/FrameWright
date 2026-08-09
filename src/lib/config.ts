@@ -590,6 +590,13 @@ export interface Config {
     /** タイムラインに置く画像素材・尺不明素材の既定の尺(秒)。
      * 省略時は DEFAULT_IMAGE_DURATION_SEC */
     defaultImageDurationSec?: number;
+    /** タイムラインのフィルムストリップ(editor-perf P1)。省略時は既定値 */
+    thumbstrip?: {
+      intervalSec?: number;
+      tileWidthPx?: number;
+      columns?: number;
+      rows?: number;
+    };
     aiReview?: {
       /** before/after still を外部APIへ送る明示的opt-in。既定false */
       vlm?: boolean;
@@ -1595,6 +1602,10 @@ export const DEFAULT_AV_SCDET_THRESHOLD = 8;
 export const DEFAULT_AV_FREEZE_NOISE_DB = -50;
 export const DEFAULT_AV_FREEZE_DURATION_SEC = 1;
 export const DEFAULT_AV_STRIP_WIDTH_PX = 320;
+export const DEFAULT_THUMBSTRIP_INTERVAL_SEC = 10;
+export const DEFAULT_THUMBSTRIP_TILE_WIDTH_PX = 160;
+export const DEFAULT_THUMBSTRIP_COLUMNS = 10;
+export const DEFAULT_THUMBSTRIP_ROWS = 10;
 
 /** describe.pauses を既定値で解決する純関数(省略時は全オフ+既定値)。
  *  loadConfig は cfg.describe を書き換えない(省略=オフ=バイト等価を守る) */
@@ -1631,6 +1642,31 @@ export function resolveAvCfg(cfg: Config): {
     },
     stripWidthPx: av.stripWidthPx ?? DEFAULT_AV_STRIP_WIDTH_PX,
   };
+}
+
+export function resolveThumbstripCfg(cfg: Config): {
+  intervalSec: number;
+  tileWidthPx: number;
+  columns: number;
+  rows: number;
+} {
+  const thumbstrip = cfg.editor?.thumbstrip ?? {};
+  return {
+    intervalSec: positiveNumber(thumbstrip.intervalSec, DEFAULT_THUMBSTRIP_INTERVAL_SEC),
+    tileWidthPx: positiveInteger(thumbstrip.tileWidthPx, DEFAULT_THUMBSTRIP_TILE_WIDTH_PX),
+    columns: positiveInteger(thumbstrip.columns, DEFAULT_THUMBSTRIP_COLUMNS),
+    rows: positiveInteger(thumbstrip.rows, DEFAULT_THUMBSTRIP_ROWS),
+  };
+}
+
+function positiveNumber(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
 }
 
 /** log.level 未指定時の既定(既存挙動=AI 行+ステージ行が出る) */

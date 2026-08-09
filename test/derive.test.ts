@@ -127,6 +127,11 @@ test("deriveProject: 必要な入力だけを引き継ぎ、派生先が validat
     });
     assert.equal(existsSync(join(result.dir, "transcript.json")), true);
     assert.equal(existsSync(join(result.dir, "cutplan.json")), true);
+    const derivedManifest = JSON.parse(readFileSync(join(result.dir, "manifest.json"), "utf8")) as Manifest;
+    assert.deepEqual(derivedManifest.derivedFrom, {
+      name: "source",
+      ranges: [{ start: 2, end: 8 }],
+    });
     for (const file of ["overlays.json", "bgm.json", "chapters.json", "meta.json", "approvals.json"]) {
       assert.equal(existsSync(join(result.dir, file)), false, `${file} must not be inherited`);
     }

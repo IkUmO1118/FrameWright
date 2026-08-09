@@ -80,6 +80,9 @@ const GENERATED_NAME_PATTERNS: readonly RegExp[] = [
  * 集約。生成物)・hyperframe.probe/(`hyperframe-check` が書く動的監査
  * レポート+still の集約。materials.probe/ 等と同じ差分更新型キャッシュ。
  * `hyperframe.probe/<name>/index.json` の形でカード名ごとのサブディレクトリを持つ)・
+ * timeline.probe/(エディタサーバーが書くタイムライン用の派生資産。
+ * waveform/ のピーク列と thumbstrip/ のスプライトシートを保持する差分更新型
+ * キャッシュ。消しても編集データは失われず、次回エディタ表示で再生成される)・
  * render.fast/(歴史的な名前。かつての高速パスの置き場だった。現在の中身は
  * design 静的資産 render.fast/design/<key>.<role>.png(背景・影・角丸 mask の
  * 内容アドレス式キャッシュ。再生成が高価な「重いキャッシュ」)と、
@@ -104,6 +107,7 @@ const GENERATED_DIRS: readonly string[] = [
   "review.probe",
   "style.probe",
   "hyperframe.probe",
+  "timeline.probe",
   "hyperframe-freeze.suggested",
   "render.fast",
   ".remotion",

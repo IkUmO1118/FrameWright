@@ -146,6 +146,14 @@ test("fileRole: hyperframe.probe/ 配下(hyperframe-check が書く動的監査�
   assert.equal(fileRole("hyperframe.probe/intro/head.png"), "generated");
 });
 
+test("fileRole: timeline.probe/ 配下(GUI エディタのタイムラインキャッシュ)は generated", () => {
+  assert.equal(fileRole("timeline.probe/waveform.json"), "generated");
+  assert.equal(fileRole("timeline.probe/waveform/9f2c1a0b3d4e5f60.bin"), "generated");
+  assert.equal(fileRole("timeline.probe/thumbstrip.json"), "generated");
+  assert.equal(fileRole("timeline.probe/thumbstrip/coarse-000.webp"), "generated");
+  assert.equal(isGeneratedCache("timeline.probe/thumbstrip/coarse-000.webp"), true);
+});
+
 test("fileRole: hyperframe-freeze.suggested/ 配下(hyperframe-freeze の使い捨て DRAFT)は generated", () => {
   assert.equal(fileRole("hyperframe-freeze.suggested/intro.html"), "generated");
   assert.equal(fileRole("hyperframe-freeze.suggested/intro.md"), "generated");
@@ -161,7 +169,7 @@ test("isGeneratedCache: 重いキャッシュだけ true、軽い中間生成物
     "frames/out10s.png",
     "render.design/dusk.jpg",
     "materials.probe/index.json", "av.probe/motion.json", "review.probe/index.json",
-    "hyperframe.probe/intro/index.json"]) {
+    "hyperframe.probe/intro/index.json", "timeline.probe/waveform.json"]) {
     assert.equal(isGeneratedCache(c), true, `${c} は cache のはず`);
   }
   // generated だが cache ではない(軽い/再生成が高価)
@@ -195,7 +203,7 @@ test("isGeneratedLog: ログ・下書き・検品結果だけ true、最適化/p
     "proxy.mp4", "proxy.m4a", "proxy.key.json", "manifest.json", "whisper-out.json", "whisper-out.srt",
     "transcript.system.json", "whisper-system-out.json",
     "materials.probe/index.json", "av.probe/motion.json", "render.design/dusk.jpg",
-    "hyperframe.probe/intro/index.json", "plan.first.json", "plan-effects.first.json"]) {
+    "hyperframe.probe/intro/index.json", "timeline.probe/waveform.json", "plan.first.json", "plan-effects.first.json"]) {
     assert.equal(isGeneratedLog(g), false, `${g} は log ではないはず`);
   }
   // generated 以外は常に false(belt)

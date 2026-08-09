@@ -8,12 +8,14 @@ import {
   buildRefineEditorAiPrompt,
   buildEditorAiPrompt,
   parseAiPatchResponse,
+  normalizeCutplanDoc,
   planEditorAiPatch,
   proposeEditorAi,
   refineEditorAi,
 } from "../src/stages/editorAi.ts";
 import { selectPreviewMedia } from "../editor/client/aiVisualReviewMedia.ts";
 import type { Config } from "../src/lib/config.ts";
+import type { CutPlan } from "../src/types.ts";
 import { completeWithJsonSchema, openAiCompatibleSchema } from "../src/lib/llm.ts";
 import type { ReviewStill } from "../src/stages/review.ts";
 
@@ -465,6 +467,83 @@ test("planEditorAiPatch: AI の注釈と字幕位置を出力範囲へクラン�
   });
 });
 
+test("editorAi: 未採用の transcript を AI に書き換えさせない", () => {
+  withTmpProject((dir) => {
+    writeFileSync(join(dir, "transcript.json"), JSON.stringify({
+      generatedBy: "transcribe",
+      language: "ja",
+      model: "test",
+      segments: [{ id: "cap_aaaaaa", start: 1, end: 3, text: "こんにちは" }],
+    }, null, 2));
+    const parsed = parseAiPatchResponse(JSON.stringify({
+      patch: { ops: [{ op: "set", target: "@cap_aaaaaa", field: "text", value: "こんにちは世界" }] },
+      review: { frames: [], notes: [] },
+    }));
+    assert.throws(
+      () => planEditorAiPatch(dir, parsed),
+      (e) =>
+        e instanceof EditorAiError &&
+        e.status === 400 &&
+        /文字起こしをテロップにする/.test(e.message),
+    );
+  });
+});
+
+test("editorAi: 未採用でも transcript を触らない提案(カットだけ)は通る", () => {
+  withTmpProject((dir) => {
+    writeFileSync(join(dir, "transcript.json"), JSON.stringify({
+      generatedBy: "transcribe",
+      language: "ja",
+      model: "test",
+      segments: [{ id: "cap_aaaaaa", start: 1, end: 3, text: "こんにちは" }],
+    }, null, 2));
+    const parsed = parseAiPatchResponse(JSON.stringify({
+      patch: {
+        ops: [{ op: "set", target: "@seg_aaaaaa", field: "reason", value: "base updated" }],
+      },
+      review: { frames: [], notes: [] },
+    }));
+    assert.doesNotThrow(() => planEditorAiPatch(dir, parsed));
+  });
+});
+
+test("editorAi: 採用済みなら transcript の編集も通る", () => {
+  withTmpProject((dir) => {
+    const parsed = parseAiPatchResponse(JSON.stringify({
+      patch: { ops: [{ op: "set", target: "@cap_aaaaaa", field: "text", value: "こんにちは世界" }] },
+      review: { frames: [], notes: [] },
+    }));
+    const res = planEditorAiPatch(dir, parsed);
+    assert.equal(res.proposedDocs.transcript.segments[0].text, "こんにちは世界");
+  });
+});
+
+test("editorAi: 採用ガードは validate ガードより先に効く", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "src/stages/editorAi.ts"), "utf8");
+  assert.match(src, /assertCaptionsAdopted\(dir, normalizedApplyPlan\.changedFiles\);\s*\n\s*assertProposalValidates/);
+  assert.match(src, /assertCaptionsAdopted\(dir, applyPlan\.changedFiles\);\s*\n\s*assertProposalValidates/);
+});
+
+test("buildEditorAiPrompt: 未採用 transcript では transcript 編集禁止を指示する", () => {
+  withTmpProject((dir) => {
+    writeFileSync(join(dir, "transcript.json"), JSON.stringify({
+      generatedBy: "transcribe",
+      language: "ja",
+      model: "test",
+      segments: [{ id: "cap_aaaaaa", start: 1, end: 3, text: "こんにちは" }],
+    }, null, 2));
+    const prompt = buildEditorAiPrompt(dir, cfg, { instruction: "テロップを直して" });
+    assert.match(prompt, /Captions are not enabled yet/);
+    assert.match(prompt, /Do NOT edit `transcript`/);
+  });
+});
+
+test("buildEditorAiPrompt: 採用済み transcript ではプロンプトに採用ガード文を足さない", () => {
+  withTmpProject((dir) => {
+    const prompt = buildEditorAiPrompt(dir, cfg, { instruction: "テロップを直して" });
+    assert.doesNotMatch(prompt, /Captions are not enabled yet/);
+  });
+});
 
 test("buildEditorAiPrompt: 指示と選択文脈と project projection を含める", () => {
   withTmpProject((dir) => {
@@ -1519,4 +1598,79 @@ printf '%s' '{"ok":true}'
     process.env.PATH = originalPath;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- AI 提案の cutplan 正規化(keep の時系列順) ---
+// plan を通していない bootstrap の「全編 keep」から AI にカットさせると、
+// cutplan.segments の配列順が崩れて保存時の validate
+//(「keep 区間が時系列順ではありません」)で弾かれることがあった。
+// 正規化は normalizeAiApplyBody(提案の唯一の合流点)で行う。
+
+test("normalizeCutplanDoc: 順序が崩れた segments を start 昇順へ直す", () => {
+  const cutplan = {
+    approved: false,
+    segments: [
+      { action: "keep", start: 8.2, end: 12.0 },
+      { action: "keep", start: 7.7, end: 8.2 },
+      { action: "cut", start: 0, end: 7.7, reason: "冗長" },
+    ],
+  } as unknown as CutPlan;
+  const out = normalizeCutplanDoc(cutplan);
+  assert.deepEqual(out.segments.map((s) => s.start), [0, 7.7, 8.2]);
+  // 並べ替え以外は変えない
+  assert.equal(out.approved, false);
+  assert.equal(out.segments.length, 3);
+});
+
+test("normalizeCutplanDoc: 既に昇順なら同一参照を返す(バイト等価)", () => {
+  const cutplan = {
+    approved: false,
+    segments: [
+      { action: "cut", start: 0, end: 7.7, reason: "冗長" },
+      { action: "keep", start: 7.7, end: 12.0 },
+    ],
+  } as unknown as CutPlan;
+  assert.equal(normalizeCutplanDoc(cutplan), cutplan);
+});
+
+test("normalizeCutplanDoc: 同じ start は元の相対順を保つ(安定ソート)", () => {
+  const cutplan = {
+    approved: false,
+    segments: [
+      { action: "keep", start: 5, end: 6, reason: "b" },
+      { action: "keep", start: 1, end: 2, reason: "a" },
+      { action: "cut", start: 5, end: 5, reason: "c" },
+    ],
+  } as unknown as CutPlan;
+  const out = normalizeCutplanDoc(cutplan);
+  assert.deepEqual(out.segments.map((s) => s.reason), ["a", "b", "c"]);
+});
+
+test("editorAi: 提案の cutplan は normalizeAiApplyBody で正規化される", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "src/stages/editorAi.ts"),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /function normalizeAiApplyBody[\s\S]*?body\.cutplan \? \{ cutplan: normalizeCutplanDoc\(body\.cutplan\) \}/,
+  );
+  // 提案は保存を待たずにこの場で検査する(差分レビューまで進んでから
+  // 保存で弾かれるのを防ぐ)
+  assert.match(src, /assertProposalValidates\(dir, mergedDocs, normalizedApplyPlan\.changedFiles\)/);
+  assert.match(src, /assertProposalValidates\(dir, mergedDocs, applyPlan\.changedFiles\)/);
+});
+
+test("applyProposalResolution: hunk マージの出口で cutplan の時系列順を直す", () => {
+  // 提案側(proposedDocs)が昇順でも、採用/不採用の組み合わせで base 側の
+  // 要素と混ざると配列順が逆転しうる。保存時の validate で弾かれるので
+  // マージの出口で必ず正規化する
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "src/lib/docDiff.ts"),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /restoreApprovalsFrom\(base, merged\);[\s\S]*?merged\.cutplan = normalizeCutplanSegments\(merged\.cutplan\)/,
+  );
 });
