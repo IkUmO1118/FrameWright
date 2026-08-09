@@ -14,6 +14,13 @@ import type {
 import { DIFF_ROW_H, DIFF_TRACK_PREFIX, MATERIAL_MIME, PRESET_MIME, trackHeightFor } from "./model.ts";
 import type { DiffTrackDef } from "./model.ts";
 import type { Hunk } from "../../src/lib/docDiff.ts";
+import {
+  sheetCellFor,
+  thumbIndexForSourceSec,
+  tileSourceSec,
+  visibleTileRange,
+} from "../../src/lib/thumbstrip.ts";
+import type { ThumbstripLevel } from "../../src/lib/thumbstrip.ts";
 import { reviewEventStatus } from "../../src/lib/reviewEvents.ts";
 import { playhead, usePlayheadSelector } from "./playhead.ts";
 import { projectPath } from "./route.ts";
@@ -130,6 +137,64 @@ const Waveform = memo(
   },
 );
 
+const Filmstrip = memo(({
+  level,
+  srcStart,
+  speed,
+  pps,
+  clipOutStart,
+  clipW,
+  pxHeight,
+  winStart,
+  winEnd,
+}: {
+  level: ThumbstripLevel;
+  srcStart: number;
+  speed: number;
+  pps: number;
+  /** クリップの開始(出力秒)。可視窓との交差計算に使う */
+  clipOutStart: number;
+  /** クリップの表示幅(CSS px) */
+  clipW: number;
+  pxHeight: number;
+  winStart: number;
+  winEnd: number;
+}) => {
+  const dispH = pxHeight;
+  const dispW = Math.max(1, Math.round(dispH * level.tileWidth / level.tileHeight));
+  const range = visibleTileRange({ clipOutStart, clipW, pps, dispW, winStart, winEnd });
+  if (!range) return null;
+  const tiles = [];
+  for (let k = range.k0; k < range.k1; k++) {
+    const left = k * dispW;
+    const width = Math.max(0, Math.min(dispW, clipW - left));
+    if (width <= 0) continue;
+    const srcSec = tileSourceSec({ k, dispW, pps, srcStart, speed });
+    const idx = thumbIndexForSourceSec(srcSec, level);
+    if (idx === null) continue;
+    const cell = sheetCellFor(idx, level);
+    if (!cell) continue;
+    const sheet = level.sheets[cell.sheetIndex];
+    if (!sheet) continue;
+    tiles.push(
+      <div
+        key={`${k}-${idx}`}
+        className="tlFilmTile"
+        style={{
+          left,
+          width,
+          height: dispH,
+          backgroundImage: `url(${projectPath(`/media/${sheet.file}`)})`,
+          backgroundSize: `${level.columns * dispW}px ${level.rows * dispH}px`,
+          backgroundPosition: `${-cell.col * dispW}px ${-cell.row * dispH}px`,
+        }}
+      />,
+    );
+  }
+  if (tiles.length === 0) return null;
+  return <div className="tlFilm">{tiles}</div>;
+});
+
 /** 水平仮想化のチャンク幅(px)。スクロールがチャンク境界を跨いだときだけ
  * 再レンダーし、可視域±1チャンクに重なるクリップ・目盛り・カット印だけを
  * DOM に置く(長尺収録では全クリップの常時 DOM 化が最大の負荷になる) */
@@ -163,6 +228,7 @@ export const Timeline = ({
   clips,
   cutMarks,
   peaks,
+  thumbstrip,
   tracks,
   selection,
   multiCaption,
@@ -220,6 +286,8 @@ export const Timeline = ({
   /** 音声の波形ピーク(キー "" = マイク、他 = 素材・BGM の相対パス)。
    * null = 音声なし/取得失敗(そのクリップは波形なし) */
   peaks: Record<string, Peaks | null>;
+  /** 映像トラックへ描くフィルムストリップ。取得不能なら null。 */
+  thumbstrip: ThumbstripLevel | null;
   /** 表示順(上=前面)。App が layerOrder から組み立てる */
   tracks: TrackDef[];
   selection: Selection;
@@ -1407,6 +1475,19 @@ export const Timeline = ({
                           title={clip.label}
                           onPointerDown={(e) => onClipDown(e, clip, "move")}
                         >
+                          {clip.film && thumbstrip && (
+                            <Filmstrip
+                              level={thumbstrip}
+                              srcStart={clip.film.srcStart}
+                              speed={clip.film.speed}
+                              pps={pps}
+                              clipOutStart={clip.outStart}
+                              clipW={Math.max(6, (clip.outEnd - clip.outStart) * pps)}
+                              pxHeight={rowH(track.id) - 6}
+                              winStart={winStart}
+                              winEnd={winEnd}
+                            />
+                          )}
                           {clip.wave && peaks[clip.wave.src] && (
                             <Waveform
                               peaks={peaks[clip.wave.src] as Peaks}

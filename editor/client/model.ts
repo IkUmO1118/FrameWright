@@ -310,6 +310,11 @@ export interface Clip {
    * (volume 省略時 0)なら付けないが、volume > 0 の動画素材は最終ミックスに
    * 音が乗るため波形を付ける */
   wave?: { src: string; startSec: number; loop?: boolean };
+  /** 映像トラックに描くフィルムストリップ。cut(keep)クリップにだけ付く。
+   * srcStart = クリップ先頭に対応する元収録の秒、speed = この keep の再生倍率。
+   * クリップ内の出力オフセット d 秒に対応する元収録の秒は srcStart + d * speed。
+   * insert クリップには付けない(素材自身の映像であって元収録ではないため) */
+  film?: { srcStart: number; speed: number };
 }
 
 /** 元収録の秒で表す区間(ズーム・ぼかし等の共通部分) */

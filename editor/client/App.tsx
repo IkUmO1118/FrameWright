@@ -39,10 +39,13 @@ import type {
   ThreeWayResult,
 } from "../../src/lib/docDiff.ts";
 import type { TimelineEntry } from "../../src/lib/timeline.ts";
+import { tileRefForSourceSec } from "../../src/lib/thumbstrip.ts";
+import type { ThumbstripLevel, ThumbTileRef } from "../../src/lib/thumbstrip.ts";
 import { isImageFile } from "../../src/lib/overlayFade.ts";
 import {
   CAPTION_DEFAULT_OUTLINE,
   DEFAULT_LAYER_ORDER,
+  DEFAULT_PLAYBACK_SPEED,
   capId,
   capNum,
   captionAnchorOf,
@@ -234,6 +237,7 @@ import {
   getProjects,
   createProject,
   getScript,
+  getThumbstrip,
   postAiDoctor,
   postConfig,
   postDraft,
@@ -1026,6 +1030,8 @@ const EditorApp = () => {
    * /api/project には含まれない)。既定 {} = 全素材表示可能扱い(degrade)。
    * fetch 失敗時も {} のまま=警告なし(§design 8.2) */
   const [mediaCodecFacts, setMediaCodecFacts] = useState<Record<string, { codec: string; reason: string }>>({});
+  /** タイムライン映像フィルムストリップ。取得不能なら null のまま描かない。 */
+  const [thumbstrip, setThumbstrip] = useState<ThumbstripLevel | null>(null);
   /** HF palette は project payload と分離し、agent が source / MP4 を追加した
    * 変更にも保存競合なしで追随する。 */
   const [hyperframes, setHyperframes] = useState<HyperframeCard[]>([]);
@@ -1053,6 +1059,22 @@ const EditorApp = () => {
       .then((r) => setMediaCodecFacts(r.mediaCodecFacts))
       .catch(() => {}); // 失敗しても {} のまま(警告なしへ degrade)
   };
+  const refreshThumbstrip = useCallback(() => {
+    getThumbstrip()
+      .then((r) => setThumbstrip(r.state === "ready" ? r.index.levels[0] ?? null : null))
+      .catch((e: Error) => {
+        console.warn(`フィルムストリップを読み込めませんでした: ${e.message}`);
+        setThumbstrip(null);
+      });
+  }, []);
+  useEffect(() => {
+    if (!proj) {
+      setThumbstrip(null);
+      return;
+    }
+    setThumbstrip(null);
+    refreshThumbstrip();
+  }, [proj?.dir, refreshThumbstrip]);
   const refreshHyperframes = useCallback(async (visible = true) => {
     if (visible) setHyperframesLoading(true);
     try {
@@ -2184,6 +2206,12 @@ const EditorApp = () => {
           wave: (() => {
             const s = toSourceTime(iv.start, timeline);
             return s !== null ? { src: "", startSec: s } : undefined;
+          })(),
+          film: (() => {
+            const src = toSourceTime(iv.start, timeline);
+            return src !== null
+              ? { srcStart: src, speed: s.speed ?? DEFAULT_PLAYBACK_SPEED }
+              : undefined;
           })(),
         });
       });
@@ -5037,6 +5065,7 @@ const EditorApp = () => {
         proxyExists: true,
       });
       setVideoVersion((v) => v + 1);
+      refreshThumbstrip();
       return true;
     } catch (e) {
       setError((e as Error).message);
@@ -7115,6 +7144,7 @@ const EditorApp = () => {
         clips={clips}
         cutMarks={cutMarks}
         peaks={peaksMap}
+        thumbstrip={thumbstrip}
         tracks={visibleTracks}
         selection={selection}
         multiCaption={capMulti}
