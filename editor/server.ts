@@ -70,6 +70,7 @@ import type { AiProposeResponse as EditorAiStageProposeResponse } from "../src/s
 import { reviewSpecOfProposalReview } from "../src/lib/editorAiReview.ts";
 import { frames } from "../src/stages/frames.ts";
 import { buildProxy, isProxyStale } from "../src/stages/proxy.ts";
+import { ensureThumbstrip } from "../src/stages/thumbstrip.ts";
 import { preview } from "../src/stages/preview.ts";
 import { findBgm, render } from "../src/stages/render.ts";
 import { reviewEdit } from "../src/stages/review.ts";
@@ -764,6 +765,13 @@ async function handle(
     const body = await getPeaks(dir, url.searchParams.get("file"));
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     res.end(body);
+    return;
+  }
+  if (req.method === "GET" && path === "/api/thumbstrip") {
+    const result = await ensureThumbstrip(dir, cfg);
+    sendJson(res, 200, "index" in result
+      ? { state: "ready", index: result.index }
+      : { state: "unavailable", reason: result.unavailable });
     return;
   }
   if (req.method === "GET" && path === "/api/media-facts") {

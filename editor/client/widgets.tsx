@@ -30,6 +30,7 @@ import type {
   SaveRequest,
   SaveResponse,
   ScriptData,
+  ThumbstripData,
   UploadResult,
 } from "./apiTypes.ts";
 import { projectPath } from "./route.ts";
@@ -159,6 +160,12 @@ export async function getPeaks(file?: string): Promise<Peaks> {
   const data = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
   return { rate: res.rate, data };
+}
+
+/** タイムラインのフィルムストリップ index。生成不能でも例外にせず
+ * state: "unavailable" が返る(呼び出し側は描かないだけ) */
+export async function getThumbstrip(): Promise<ThumbstripData> {
+  return (await request("/api/thumbstrip", undefined)) as ThumbstripData;
 }
 
 export async function postSave(body: SaveRequest): Promise<SaveResponse> {

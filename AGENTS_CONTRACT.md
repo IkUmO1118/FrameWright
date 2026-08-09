@@ -191,6 +191,11 @@ false staleness signals or gets silently discarded:
   whole directory forces a full re-audit. Holds the dynamic audit report
   (deterministic findings, driver counts, sample-grid metadata) and, in a
   later commit, still paths and VLM secondary-review results
+- `timeline.probe/` — a **cache-style** generated directory written by the
+  editor server for timeline-only derived assets (`waveform.json` plus
+  `waveform/*.bin`, and `thumbstrip.json` plus `thumbstrip/*.webp` / `*.jpg`). It is
+  not source data; deleting it only forces the editor to regenerate timeline
+  waveform and thumbnail caches.
 - `hyperframe-freeze.suggested/` — a **disposable-draft** generated
   directory written by `hyperframe-freeze <dir> --name <name>` (`<name>.html`,
   a skeletonized copy of `hyperframes/<name>.html` with `string`-typed

@@ -124,6 +124,9 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
   `motion.json` / `sound.json` / `motion.strip.png`。`materials.probe/` と
   同じく実行のたびの全消しはしない差分更新型で、同じ入力 key なら前回結果を
   再利用する) /
+  `timeline.probe/`(GUI エディタが書くタイムライン用の差分更新型キャッシュ。
+  `waveform.json` + `waveform/*.bin`、`thumbstrip.json` + `thumbstrip/*.webp` / `*.jpg`。
+  編集データではなく、削除しても次回エディタ表示で再生成される) /
   `material-fit.suggested.json`(`material-fit <dir>` が書く使い捨ての下書き。
   次回実行で黙って上書きされる。`rules.suggested.md` と同カテゴリだが中身は
   `apply --patch` にそのまま食わせられる ops 形式。**自分で `apply` しない**

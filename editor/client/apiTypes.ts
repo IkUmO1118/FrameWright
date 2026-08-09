@@ -17,6 +17,7 @@ import type { FrameShot } from "../../src/stages/frames.ts";
 import type { ReviewBundle, ReviewKey } from "../../src/stages/review.ts";
 import type { PreparedDesignAssets } from "../../src/lib/design.ts";
 import type { SourceCandidate } from "../../src/lib/findSource.ts";
+import type { ThumbstripIndex } from "../../src/lib/thumbstrip.ts";
 export type {
   AiProposeRequest,
   AiScope,
@@ -272,6 +273,12 @@ export interface PeaksData {
   /** ピーク列(各 0..255、全体の最大値で正規化)のバイト列を base64 で */
   peaks: string;
 }
+
+/** GET /api/thumbstrip のレスポンス。生成不能でも 200 + unavailable を返す
+ * (エディタは thumbstrip 無しで普通に動くので 4xx にしない) */
+export type ThumbstripData =
+  | { state: "ready"; index: ThumbstripIndex }
+  | { state: "unavailable"; reason: string };
 
 /** GET /api/media-facts のレスポンス。動画素材(materials/ の mp4/mov/webm)
  * ごとの codec 由来のブラウザ表示可否(§design 8.2)。/api/project に含めない
