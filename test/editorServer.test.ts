@@ -24,6 +24,7 @@ import {
   validateRefineRequest,
   validateHyperframeRenderRequest,
   validateReviewRequest,
+  jobStartDecision,
   saveHeavyJobDecision,
 } from "../editor/server.ts";
 import { ID_RE } from "../src/lib/ids.ts";
@@ -52,6 +53,33 @@ test("saveHeavyJobDecision: review だけ中止して保存を通す", () => {
     "hyperframe-author",
   ] as const) {
     assert.equal(saveHeavyJobDecision(stage), "reject", stage);
+  }
+});
+
+test("jobStartDecision: 何も走っていなければ開始する", () => {
+  assert.equal(jobStartDecision(null, "render"), "start");
+  assert.equal(jobStartDecision(null, "preview"), "start");
+});
+
+test("jobStartDecision: 同種のジョブが走っていれば同じ job を返す", () => {
+  assert.equal(jobStartDecision({ stage: "render", kind: "render" }, "render"), "same");
+  assert.equal(jobStartDecision({ stage: "preview", kind: "preview" }, "preview"), "same");
+});
+
+test("jobStartDecision: 別種の書き出しは 409", () => {
+  assert.equal(jobStartDecision({ stage: "preview", kind: "preview" }, "render"), "conflict");
+  assert.equal(jobStartDecision({ stage: "render", kind: "render" }, "preview"), "conflict");
+});
+
+test("jobStartDecision: 書き出し以外の重いジョブ中も 409", () => {
+  for (const stage of [
+    "propose",
+    "review",
+    "hyperframe-render",
+    "hyperframe-author",
+  ] as const) {
+    assert.equal(jobStartDecision({ stage, kind: null }, "render"), "conflict", stage);
+    assert.equal(jobStartDecision({ stage, kind: null }, "preview"), "conflict", stage);
   }
 });
 

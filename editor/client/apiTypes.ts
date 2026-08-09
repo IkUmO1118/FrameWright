@@ -174,6 +174,27 @@ export interface ProjectsResponse {
   projects: ProjectSummary[];
 }
 
+export type JobKind = "preview" | "render";
+
+/** 書き出しジョブ(editor-perf P4)。サーバープロセス内にだけ存在し、
+ * サーバー再起動で消える(実行中の子プロセスへ再接続はできないため) */
+export interface RenderJob {
+  id: string;
+  kind: JobKind;
+  status: "queued" | "running" | "complete" | "failed";
+  /** ISO 8601 */
+  startedAt: string;
+  finishedAt?: string;
+  /** 成功時の出力パス(収録フォルダ内の絶対パス) */
+  output?: string;
+  /** 失敗時の理由(人間向け日本語) */
+  error?: string;
+}
+
+export interface JobStartRequest { kind: JobKind }
+export interface JobStartResponse { job: RenderJob }
+export interface JobActiveResponse { job: RenderJob | null }
+
 export type PlanPerceptionStatus = PerceptionStatus;
 
 /** GET /api/script のレスポンス。元収録の全文スクリプト(AI が編集する前の

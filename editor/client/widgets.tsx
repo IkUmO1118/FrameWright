@@ -21,6 +21,9 @@ import type {
   HyperframeAuthorResponse,
   HyperframeRenderResponse,
   HyperframesData,
+  JobActiveResponse,
+  JobKind,
+  JobStartResponse,
   MediaFactsData,
   PeaksData,
   ProjectData,
@@ -217,16 +220,19 @@ export async function postConfig(patch: ConfigPatch): Promise<ConfigSaveResult> 
   return (await request("/api/config", patch)) as ConfigSaveResult;
 }
 
-/** カット確認用プレビュー(preview.mp4)の生成。完了までに時間がかかる。
- * 入力はディスクの JSON を読むので、呼ぶ前に保存しておくこと */
-export async function postPreview(): Promise<{ path: string }> {
-  return (await request("/api/preview", {})) as { path: string };
+/** 書き出しジョブの開始。202 で即座に返り、完了は SSE / GET で追う */
+export async function postJob(kind: JobKind): Promise<JobStartResponse> {
+  return (await request("/api/jobs", { kind })) as JobStartResponse;
 }
 
-/** 最終レンダー(final.mp4)。approved: true が必要で、数分かかることがある。
- * 入力はディスクの JSON を読むので、呼ぶ前に保存しておくこと */
-export async function postRender(): Promise<{ path: string }> {
-  return (await request("/api/render", {})) as { path: string };
+/** 実行中のジョブ。reload 復帰に使う */
+export async function getActiveJob(): Promise<JobActiveResponse> {
+  return (await request("/api/jobs/active", undefined)) as JobActiveResponse;
+}
+
+/** 直近ジョブの状態。SSE を取り逃したときの低頻度再同期に使う */
+export async function getJob(id: string): Promise<JobStartResponse> {
+  return (await request(`/api/jobs/${encodeURIComponent(id)}`, undefined)) as JobStartResponse;
 }
 
 /** 出力先(final.mp4 / preview.mp4 等)を Finder で開き直す。完了トーストの

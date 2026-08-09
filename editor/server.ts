@@ -121,6 +121,8 @@ import type {
   HyperframeCard,
   HyperframeAuthorRequest,
   HyperframeRenderRequest,
+  JobKind,
+  RenderJob,
   AiFrameRequest,
   AiProposeRequest,
   AiRefineRequest,
@@ -207,6 +209,7 @@ export async function startEditor(
   // 書いた内容のハッシュ)との内容一致で除外する(時間窓ではない。§8.3)。
   // 連続イベント(エディタの書き込みは複数イベントになる)は少しまとめる
   const hub: EventHub = { clients: new Set() };
+  const renderJobRegistry: RenderJobRegistry = { current: null };
   let changed = new Set<string>();
   let notifyTimer: NodeJS.Timeout | null = null;
   let projectWatcher: FSWatcher | null = null;
@@ -238,7 +241,7 @@ export async function startEditor(
   }
 
   const server = createServer((req, res) => {
-    handle(req, res, dir, cfg, cfgPath, assets, hub, engineDevAssets, layout, canvas, baseLayout, launcherMode, watchProject).catch((err: Error) => {
+    handle(req, res, dir, cfg, cfgPath, assets, hub, renderJobRegistry, engineDevAssets, layout, canvas, baseLayout, launcherMode, watchProject).catch((err: Error) => {
       // HttpError は想定内の拒否(不正な保存=400、大きすぎる素材=413 等)。
       // それ以外は想定外なのでログに残して 500 で返す
       if (err instanceof HttpError) {
@@ -253,9 +256,9 @@ export async function startEditor(
       sendJson(res, 500, { error: err.message });
     });
   });
-  // レンダーは数分かかることがあり、その間 POST /api/render のレスポンスを
-  // 保留する。Node 既定の requestTimeout(5分)で接続が切れないよう無効化する
-  // (ローカル単一利用のツールなのでスローロリス対策は不要)
+  // レンダーは数分かかることがある。GUI の /api/jobs は即時 202 を返すが、
+  // 既存の重い処理が requestTimeout に巻き込まれないよう無効化しておく
+  // (ローカル単一利用のツールなのでスローロリス対策は不要)。
   server.requestTimeout = 0;
 
   const port = Number(process.env.PORT) || 4310;
@@ -524,6 +527,10 @@ interface EventHub {
   clients: Set<ServerResponse>;
 }
 
+interface RenderJobRegistry {
+  current: RenderJob | null;
+}
+
 interface StoredProposal {
   proposalId: string;
   proposal: EditorAiStageProposeResponse;
@@ -559,6 +566,7 @@ async function handle(
   cfgPath: string,
   assets: MutableEditorClientAssets,
   hub: EventHub,
+  renderJobRegistry: RenderJobRegistry,
   engineDevAssets: EngineDevAssets,
   layout?: "obs-canvas" | "plain" | "auto" | "stills",
   initialCanvas?: string,
@@ -746,7 +754,7 @@ async function handle(
     return;
   }
   if (req.method === "GET" && path === "/api/events") {
-    // 編集 JSON の外部変更を流す SSE。切断まで開きっぱなしにする
+    // 編集 JSON の外部変更と書き出しジョブ状態を流す SSE。切断まで開きっぱなしにする
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-store",
@@ -759,6 +767,72 @@ async function handle(
       clearInterval(ping);
       hub.clients.delete(res);
     });
+    return;
+  }
+  if (req.method === "POST" && path === "/api/jobs") {
+    const body = await readBody(req) as { kind?: unknown };
+    if (body.kind !== "preview" && body.kind !== "render") {
+      throw new HttpError(400, "kind は preview / render のどちらかを指定してください");
+    }
+    const kind = body.kind;
+    const decision = jobStartDecision(
+      heavyJob
+        ? {
+            stage: heavyJob.stage,
+            kind: renderJobRegistry.current?.status === "running" ? renderJobRegistry.current.kind : null,
+          }
+        : null,
+      kind,
+    );
+    if (decision === "same" && renderJobRegistry.current) {
+      sendJson(res, 202, { job: renderJobRegistry.current });
+      return;
+    }
+    if (decision === "conflict" && heavyJob) {
+      throw new HttpError(409, `${jaStage(heavyJob.stage)}を実行中です。完了までお待ちください`);
+    }
+
+    const job: RenderJob = {
+      id: randomUUID(),
+      kind,
+      status: "running",
+      startedAt: new Date().toISOString(),
+    };
+    renderJobRegistry.current = job;
+    broadcastJob(hub, renderJobRegistry.current);
+    void runHeavyJob(kind, kind, () =>
+      kind === "preview" ? preview(dir, cfg) : render(dir, cfg),
+    )
+      .then((out) => {
+        renderJobRegistry.current = {
+          ...job,
+          status: "complete",
+          finishedAt: new Date().toISOString(),
+          output: out,
+        };
+        if (kind === "render") spawn("open", ["-R", out], { stdio: "ignore" }).on("error", () => {});
+      })
+      .catch((err: Error) => {
+        renderJobRegistry.current = {
+          ...job,
+          status: "failed",
+          finishedAt: new Date().toISOString(),
+          error: err.message,
+        };
+      })
+      .finally(() => broadcastJob(hub, renderJobRegistry.current));
+    sendJson(res, 202, { job });
+    return;
+  }
+  if (req.method === "GET" && path === "/api/jobs/active") {
+    const job = renderJobRegistry.current;
+    sendJson(res, 200, { job: job && (job.status === "queued" || job.status === "running") ? job : null });
+    return;
+  }
+  if (req.method === "GET" && path.startsWith("/api/jobs/")) {
+    const id = decodeURIComponent(path.slice("/api/jobs/".length));
+    if (renderJobRegistry.current?.id !== id) throw new HttpError(404, `知らないジョブです: ${id}`);
+    sendJson(res, 200, { job: renderJobRegistry.current });
     return;
   }
   if (req.method === "GET" && path === "/api/peaks") {
@@ -1235,21 +1309,6 @@ async function handle(
     sendJson(res, 200, { ok: true, ...result });
     return;
   }
-  if (req.method === "POST" && (path === "/api/preview" || path === "/api/render")) {
-    // 承認後のプレビュー生成・最終レンダーを GUI から起動する
-    // (承認チェックはヘッダーにあるのに、これまでは実行だけターミナルへ
-    //  戻る必要があった)。proxy と同じく長時間サブプロセスを走らせ、
-    //  完了までレスポンスを保留する。preview / render は入力ファイル一式を
-    //  ディスクから読むので、クライアントは実行前に必ず保存(⌘S)する。
-    const stage = path === "/api/preview" ? "preview" : "render";
-    const out = await runHeavyJob(stage, stage, () =>
-      stage === "preview" ? preview(dir, cfg) : render(dir, cfg),
-    ) as string;
-    // レンダーは完成物を Finder で開いて教える(ターミナルへ戻らなくてよい)
-    if (stage === "render") spawn("open", ["-R", out], { stdio: "ignore" }).on("error", () => {});
-    sendJson(res, 200, { ok: true, path: out });
-    return;
-  }
   if (req.method === "POST" && path === "/api/reveal") {
     // 完了トーストの「開く」から出力先(final.mp4 / preview.mp4 等)を Finder で
     // 開き直す。render は完了時に自動で開くが、preview や2回目以降のために提供。
@@ -1582,6 +1641,16 @@ export function saveHeavyJobDecision(stage: HeavyJobStage | null): SaveHeavyJobD
   return stage === "review" ? "cancel" : "reject";
 }
 
+/** POST /api/jobs を受けたときに、実行中の重いジョブから決まる応答。
+ * "start" = 開始してよい / "same" = 同じ job を返す / "conflict" = 409 */
+export function jobStartDecision(
+  running: { stage: HeavyJobStage; kind: JobKind | null } | null,
+  kind: JobKind,
+): "start" | "same" | "conflict" {
+  if (running === null) return "start";
+  return running.kind === kind && running.stage === kind ? "same" : "conflict";
+}
+
 /** 実行中の重いジョブ(preview / render / review)。同時に1つだけ走らせ、
  * 同じ key の二重起動はプロミスを共有、別 key は 409 で拒否する */
 let heavyJob:
@@ -1603,6 +1672,13 @@ const jaStage = (s: HeavyJobStage): string =>
       : s === "propose"
         ? "AI提案生成"
         : "プレビュー生成";
+
+/** job の状態変化を SSE で全クライアントへ push する。
+ * ペイロードは { job } で、外部変更通知の { files } とはキーで区別する */
+function broadcastJob(hub: EventHub, job: RenderJob | null): void {
+  const payload = JSON.stringify({ job });
+  for (const c of hub.clients) c.write(`data: ${payload}\n\n`);
+}
 
 async function runHeavyJob<T>(
   stage: HeavyJobStage,

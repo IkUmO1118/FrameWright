@@ -84,7 +84,9 @@ import type {
   DraftData,
   HyperframeCard,
   EmptyProjectData,
+  JobKind,
   ReadyProjectData,
+  RenderJob,
   ProjectSummary,
   RootStatus,
   SaveRequest,
@@ -245,9 +247,8 @@ import {
   postAiRefine,
   postAiReview,
   postAnalyze,
-  postPreview,
   postProxy,
-  postRender,
+  postJob,
   postHyperframeRender,
   postHyperframeAuthor,
   postReveal,
@@ -789,10 +790,11 @@ const EditorApp = () => {
   /** GUI から起動した書き出しジョブ(preview / render)。running 中はボタンを
    * 無効化し、done で完了先を出す。null は非実行 */
   const [job, setJob] = useState<{
-    stage: "preview" | "render";
+    stage: JobKind;
     status: "running" | "done";
     path?: string;
   } | null>(null);
+  const jobToastRef = useRef<{ jobId: string; toastId: string } | null>(null);
   const [selection, setSelectionState] = useState<Selection>(null);
   const [playing, setPlaying] = useState(false);
   /** ループ再生(プレビューのみ。末尾まで行ったら先頭へ戻る) */
@@ -1401,6 +1403,63 @@ const EditorApp = () => {
   const reviewExternalRef = useRef(reviewExternalChange);
   reviewExternalRef.current = reviewExternalChange;
   const connectionToastRef = useRef<string | null>(null);
+  const showRunningJobToast = useCallback((serverJob: RenderJob): string => {
+    const existing = jobToastRef.current;
+    if (existing?.jobId === serverJob.id) return existing.toastId;
+    if (existing) dismissToast(existing.toastId);
+    const label = serverJob.kind === "render" ? "レンダー" : "プレビュー生成";
+    const toastId = addToast({
+      kind: "progress",
+      message:
+        `${label}中…` +
+        (serverJob.kind === "render" ? "(数分かかることがあります)" : ""),
+    });
+    jobToastRef.current = { jobId: serverJob.id, toastId };
+    return toastId;
+  }, [addToast, dismissToast]);
+  const applyJobUpdate = useCallback((serverJob: RenderJob | null) => {
+    if (serverJob === null) {
+      if (jobToastRef.current) {
+        dismissToast(jobToastRef.current.toastId);
+        jobToastRef.current = null;
+      }
+      setJob(null);
+      return;
+    }
+    if (serverJob.status === "running" || serverJob.status === "queued") {
+      setJob({ stage: serverJob.kind, status: "running" });
+      showRunningJobToast(serverJob);
+      return;
+    }
+    if (serverJob.status === "complete") {
+      const output = serverJob.output ?? "";
+      setJob({ stage: serverJob.kind, status: "done", path: output || undefined });
+      const fname = output.split("/").pop() ?? output;
+      const toastId = jobToastRef.current?.jobId === serverJob.id ? jobToastRef.current.toastId : null;
+      const nextToast = {
+        kind: "success" as const,
+        message: `${serverJob.kind === "render" ? "レンダー" : "プレビュー"}完了: ${fname || "出力完了"}`,
+        ...(output ? {
+          action: {
+            label: "開く",
+            onClick: () =>
+              postReveal(output).catch((e) => setError((e as Error).message)),
+          },
+        } : {}),
+        ttlMs: 6000,
+      };
+      if (toastId) updateToast(toastId, nextToast);
+      else addToast(nextToast);
+      jobToastRef.current = null;
+      return;
+    }
+    setError(serverJob.error ?? "書き出しに失敗しました");
+    setJob(null);
+    if (jobToastRef.current?.jobId === serverJob.id) {
+      dismissToast(jobToastRef.current.toastId);
+      jobToastRef.current = null;
+    }
+  }, [addToast, dismissToast, showRunningJobToast, updateToast]);
   useEffect(() => {
     const es = new EventSource(projectPath("/api/events"));
     es.onopen = () => {
@@ -5195,7 +5254,7 @@ const EditorApp = () => {
    * ディスクの JSON を読むので、未保存の編集があれば先に保存してから走らせる
    * (承認チェックも cutplan の一部なので、これでディスクへ反映される)。
    * render は approved: true が要る(サーバー側でも承認ゲートで弾かれる) */
-  const runExport = async (stage: "preview" | "render") => {
+  const runExport = async (stage: JobKind) => {
     if (job?.status === "running") return;
     setError(null);
     if (anyDirty) {
@@ -5209,34 +5268,12 @@ const EditorApp = () => {
         setBusy(null);
       }
     }
-    setJob({ stage, status: "running" });
-    // 実行中は progress トーストを1枚。完了時に updateToast で success へ差し替え
-    // (消して出し直さない=積み位置が飛ばない)。id はこのクロージャ内で完結する
-    const label = stage === "render" ? "レンダー" : "プレビュー生成";
-    const toastId = addToast({
-      kind: "progress",
-      message:
-        `${label}中…` +
-        (stage === "render" ? "(数分かかることがあります)" : ""),
-    });
     try {
-      const res = stage === "preview" ? await postPreview() : await postRender();
-      setJob({ stage, status: "done", path: res.path });
-      const fname = res.path.split("/").pop() ?? res.path;
-      updateToast(toastId, {
-        kind: "success",
-        message: `${stage === "render" ? "レンダー" : "プレビュー"}完了: ${fname}`,
-        action: {
-          label: "開く",
-          onClick: () =>
-            postReveal(res.path).catch((e) => setError((e as Error).message)),
-        },
-        ttlMs: 6000,
-      });
+      const { job } = await postJob(stage);
+      applyJobUpdate(job);
     } catch (e) {
       setError((e as Error).message); // エラートーストは error の effect が出す
       setJob(null);
-      dismissToast(toastId); // progress トーストは畳む(表示は error トーストへ委ねる)
     }
   };
 
