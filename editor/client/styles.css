@@ -6788,14 +6788,21 @@
 /* セット表示: diff レーン(上)と本体トラック(下)を左罫と背景で括る。
    間には境界線を引かず、セットの外側にだけ引く */
 .diffTrack.setTop,
+.tlTrack.setTop,
 .tlTrack.setBottom,
 .tlLabelDiff.setTop,
+.tlLabel.setTop,
 .tlLabel.setBottom {
   background: hsl(var(--oc-accent) / 0.05);
   box-shadow: inset 2px 0 0 0 hsl(var(--oc-primary) / 0.7);
 }
 .diffTrack.setTop,
+.tlTrack.setTop,
 .tlLabelDiff.setTop {
+  border-top: 1px solid hsl(var(--oc-border));
+  border-bottom: none;
+}
+.tlLabel.setTop {
   border-top: 1px solid hsl(var(--oc-border));
   border-bottom: none;
 }

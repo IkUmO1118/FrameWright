@@ -81,6 +81,7 @@ export type TrackId =
   | "annotation"
   | "text"
   | "cut"
+  | "cutAudio"
   | "bgm"
   | `ov${number}`
   | `cap${number}`
@@ -137,10 +138,16 @@ const TRACK_DEFS = {
       `ダブルクリックで文言を編集。${REORDER_HINT}`,
   },
   cut: {
-    id: "cut", label: "映像", audio: "cut",
+    id: "cut", label: "映像",
     hint:
       "画面+マイク。keep 区間の移動・トリム(最下層固定)。" +
       "ファイルをドロップするとその位置にインサート(後続が後ろへズレる)",
+  },
+  cutAudio: {
+    id: "cutAudio", label: "音声", audio: "cut",
+    hint:
+      "マイク+インサート素材の音。映像レーンと同じ keep 区間を音声側から見た表示で、" +
+      "端のトリム・移動はどちらのレーンからでも同じ編集になる",
   },
   bgm: {
     id: "bgm", label: "BGM", audio: "bgm", createKind: "bgm",
@@ -220,6 +227,7 @@ export const buildTracks = (
     TRACK_DEFS.blur,
     TRACK_DEFS.annotation,
     ...(hasTextLayer ? [] : [TRACK_DEFS.text]),
+    TRACK_DEFS.cutAudio,
     TRACK_DEFS.cut,
     TRACK_DEFS.bgm,
   ];
@@ -255,7 +263,7 @@ export const TRACK_H = { video: 65, audio: 50, text: 25, effect: 25 } as const;
 /** トラック id → 既定の行高(px)。素材/映像=video, bgm=audio, テロップ=text, 演出=effect */
 export const trackHeightFor = (id: TrackId): number => {
   if (id === "cut" || ovNum(id) !== null) return TRACK_H.video;
-  if (id === "bgm") return TRACK_H.audio;
+  if (id === "cutAudio" || id === "bgm") return TRACK_H.audio;
   if (id === "caption" || capNum(id) !== null) return TRACK_H.text;
   return TRACK_H.effect;
 };

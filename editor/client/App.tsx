@@ -2357,22 +2357,29 @@ const EditorApp = () => {
       if (s.action !== "keep") return;
       const parts = remapInterval(s.start, s.end, timeline);
       parts.forEach((iv, j) => {
+        const src = toSourceTime(iv.start, timeline);
+        const common = {
+          kind: "cut" as const,
+          index: i,
+          outStart: iv.start,
+          outEnd: iv.end,
+          label: `${s.start.toFixed(1)}s〜${s.end.toFixed(1)}s`,
+          editable: true,
+          noTrimStart: j > 0,
+          noTrimEnd: j < parts.length - 1,
+        };
         cs.push({
-          kind: "cut", index: i, track: "cut",
-          outStart: iv.start, outEnd: iv.end,
-          label: `${s.start.toFixed(1)}s〜${s.end.toFixed(1)}s`, editable: true,
-          noTrimStart: j > 0, noTrimEnd: j < parts.length - 1,
+          ...common,
+          track: "cut",
+          film: src !== null
+            ? { srcStart: src, speed: s.speed ?? DEFAULT_PLAYBACK_SPEED }
+            : undefined,
+        });
+        cs.push({
+          ...common,
+          track: "cutAudio",
           // 波形はマイク音声。keep クリップの中身は元収録と連続なので先頭の秒だけ持つ
-          wave: (() => {
-            const s = toSourceTime(iv.start, timeline);
-            return s !== null ? { src: "", startSec: s } : undefined;
-          })(),
-          film: (() => {
-            const src = toSourceTime(iv.start, timeline);
-            return src !== null
-              ? { srcStart: src, speed: s.speed ?? DEFAULT_PLAYBACK_SPEED }
-              : undefined;
-          })(),
+          wave: src !== null ? { src: "", startSec: src } : undefined,
         });
       });
     });
@@ -2382,12 +2389,22 @@ const EditorApp = () => {
     insertSpans(keeps, inserts).forEach((sp) => {
       const ins = inserts[sp.index];
       const fileName = ins.file.split(/[\\/]/).pop() ?? ins.file;
-      cs.push({
-        kind: "insert", index: sp.index, track: "cut",
-        outStart: sp.start, outEnd: sp.end,
+      const common = {
+        kind: "insert" as const,
+        index: sp.index,
+        outStart: sp.start,
+        outEnd: sp.end,
         label: fileName,
-        mediaKind: isImageFile(ins.file) ? "image" : "video",
         editable: true,
+      };
+      cs.push({
+        ...common,
+        track: "cut",
+        mediaKind: isImageFile(ins.file) ? "image" : "video",
+      });
+      cs.push({
+        ...common,
+        track: "cutAudio",
         wave: { src: ins.file, startSec: ins.startFrom ?? 0 },
       });
     });
@@ -2542,6 +2559,7 @@ const EditorApp = () => {
     return timelineTracks.filter(
       (t) =>
         t.id === "cut" ||
+        t.id === "cutAudio" ||
         (t.id === "wipe" && proj?.hasCamera !== false) ||
         occupied.has(t.id) ||
         hasDiff.has(t.id) ||

@@ -480,6 +480,10 @@ export const Timeline = ({
     () => new Set((diffTracks ?? []).map((dt) => dt.sourceTrack.id)),
     [diffTracks],
   );
+  /** 映像/音声レーンは 1 セットとして枠線でまとめる(diff レーンの pair とは別) */
+  const AV_PAIR_BOTTOM: TrackId = "cut";
+  const isAvPairTop = (id: TrackId) => id === "cutAudio";
+  const isAvPairBottom = (id: TrackId) => id === AV_PAIR_BOTTOM;
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -1252,7 +1256,7 @@ export const Timeline = ({
                 (t.id === "wipe" && selection?.kind === "wipe");
               return (
                 <div
-                  className={`tlLabel${t.reorderable ? " reorderable" : ""}${dragLabel === t.id ? " dragging" : ""}${drop && !drop.newTrack && drop.track === t.id ? " dropActive" : ""}${trackSelected ? " sel" : ""}${pairedTrackIds.has(t.id) ? " setBottom" : ""}`}
+                  className={`tlLabel${t.reorderable ? " reorderable" : ""}${dragLabel === t.id ? " dragging" : ""}${drop && !drop.newTrack && drop.track === t.id ? " dropActive" : ""}${trackSelected ? " sel" : ""}${isAvPairTop(t.id) ? " setTop" : ""}${pairedTrackIds.has(t.id) || isAvPairBottom(t.id) ? " setBottom" : ""}`}
                   key={t.id}
                   style={{ height: rowH(t.id) }}
                   title={t.hint}
@@ -1461,7 +1465,7 @@ export const Timeline = ({
                           : ""
                   }${
                     presetDragTrack === track.id && !byTrack.get(track.id) ? " ocTrackDropLane" : ""
-                  }${pairedTrackIds.has(track.id) ? " setBottom" : ""}`}
+                  }${isAvPairTop(track.id) ? " setTop" : ""}${pairedTrackIds.has(track.id) || isAvPairBottom(track.id) ? " setBottom" : ""}`}
                   key={track.id}
                   style={{ height: rowH(track.id) }}
                   onPointerDown={(e) => onTrackDown(e, track)}

@@ -30,8 +30,15 @@ export interface ThumbstripSheet {
   count: number;
 }
 
+/**
+ * 段の識別子。今は 1 段だけだが、**sheet ファイル名の接頭辞と同一**であることが契約
+ * (`sheetFileName` が組み立て、`src/stages/thumbstrip.ts` の `generatedSheets` が
+ * 同じ id で拾う)。段を増やすときはこの union に足せば両側が型で追随する
+ */
+export type ThumbstripLevelId = "coarse";
+
 export interface ThumbstripLevel {
-  id: "coarse";
+  id: ThumbstripLevelId;
   format: ThumbstripFormat;
   intervalSec: number;
   tileWidth: number;
@@ -83,6 +90,7 @@ export function planThumbstrip(args: {
   const tileWidth = Math.max(1, Math.floor(finiteOr(args.tileWidth, 1)));
   const tileHeight = Math.max(1, Math.floor(finiteOr(args.tileHeight, 1)));
   const format = args.format ?? "webp";
+  const levelId: ThumbstripLevelId = "coarse";
   const perSheet = columns * rows;
   const maxTiles = THUMBSTRIP_MAX_SHEETS * perSheet;
   let intervalSec = Math.max(1, finiteOr(args.intervalSec, 1));
@@ -95,13 +103,13 @@ export function planThumbstrip(args: {
   for (let sheetIndex = 0; sheetIndex < sheetCount; sheetIndex++) {
     const startIndex = sheetIndex * perSheet;
     sheets.push({
-      file: `timeline.probe/thumbstrip/${sheetFileName("coarse", sheetIndex, format)}`,
+      file: `timeline.probe/thumbstrip/${sheetFileName(levelId, sheetIndex, format)}`,
       startIndex,
       count: Math.min(perSheet, count - startIndex),
     });
   }
   return {
-    id: "coarse",
+    id: levelId,
     format,
     intervalSec,
     tileWidth,
@@ -154,7 +162,11 @@ export function sheetCellFor(
 }
 
 /** シートのファイル名。level.id と 3 桁ゼロ埋め */
-export function sheetFileName(levelId: "coarse", sheetIndex: number, format: ThumbstripFormat = "webp"): string {
+export function sheetFileName(
+  levelId: ThumbstripLevelId,
+  sheetIndex: number,
+  format: ThumbstripFormat = "webp",
+): string {
   return `${levelId}-${String(sheetIndex).padStart(3, "0")}.${format === "jpeg" ? "jpg" : "webp"}`;
 }
 

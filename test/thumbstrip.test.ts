@@ -133,6 +133,28 @@ test("sheetFileName: 3 桁ゼロ埋め", () => {
   assert.equal(sheetFileName("coarse", 0, "jpeg"), "coarse-000.jpg");
 });
 
+test("level.id は sheet ファイル名の接頭辞と一致する(段を増やしたときの取りこぼし防止)", () => {
+  // stages/thumbstrip.ts の generatedSheets は level.id を接頭辞に ffmpeg 出力を拾う。
+  // planThumbstrip 側が別の接頭辞を書くと 0 件になり黙って unavailable へ落ちるので、
+  // 両者が同じ id から出ていることをここで固定する
+  for (const format of ["webp", "jpeg"] as const) {
+    const level = planThumbstrip({
+      durationSec: 1010,
+      intervalSec: 10,
+      columns: 10,
+      rows: 10,
+      tileWidth: 160,
+      tileHeight: 90,
+      format,
+    });
+    for (const sheet of level.sheets) {
+      const base = sheet.file.slice(sheet.file.lastIndexOf("/") + 1);
+      assert.ok(base.startsWith(`${level.id}-`), `${base} が ${level.id}- で始まらない`);
+      assert.match(base, new RegExp(`^${level.id}-\\d{3}\\.(webp|jpg)$`));
+    }
+  }
+});
+
 test("tileRefForSourceSec: source 秒から sheet セル参照を返す", () => {
   const level = planThumbstrip({
     durationSec: 1010,

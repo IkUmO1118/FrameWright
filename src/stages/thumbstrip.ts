@@ -19,7 +19,12 @@ import {
   THUMBSTRIP_GENERATION,
 } from "../lib/thumbstrip.ts";
 import type { Config } from "../lib/config.ts";
-import type { ThumbstripIndex, ThumbstripKey, ThumbstripLevel } from "../lib/thumbstrip.ts";
+import type {
+  ThumbstripIndex,
+  ThumbstripKey,
+  ThumbstripLevel,
+  ThumbstripLevelId,
+} from "../lib/thumbstrip.ts";
 import type { Manifest } from "../types.ts";
 
 type ThumbstripResult = { index: ThumbstripIndex } | { unavailable: string };
@@ -220,17 +225,20 @@ async function generateThumbstripSheets(
   ];
   try {
     await run("ffmpeg", [...commonArgs, join(tmpDir, `${level.id}-%03d.webp`)]);
-    const webpSheets = generatedSheets(tmpDir, "webp");
+    const webpSheets = generatedSheets(tmpDir, level.id, "webp");
     if (webpSheets.length > 0) return { format: "webp", files: webpSheets };
   } catch (err) {
-    console.warn(`ffmpeg の WebP 出力に失敗しました。JPEG へフォールバックします: ${(err as Error).message}`);
+    // ffmpeg のビルドに libwebp が無い環境では毎回ここを通る。表示上の差は無いので
+    // 「失敗」ではなく劣化として告げる(format はキャッシュキーに入るので次回以降は
+    // JPEG のまま再利用され、この行は再生成時にしか出ない)
+    console.warn(`WebP シートを生成できないため JPEG で生成します(表示に差はありません)。理由: ${(err as Error).message}`);
   }
 
   rmSync(tmpDir, { recursive: true, force: true });
   mkdirSync(tmpDir, { recursive: true });
   try {
     await run("ffmpeg", [...commonArgs, join(tmpDir, `${level.id}-%03d.jpg`)]);
-    const jpegSheets = generatedSheets(tmpDir, "jpg");
+    const jpegSheets = generatedSheets(tmpDir, level.id, "jpg");
     return jpegSheets.length > 0 ? { format: "jpeg", files: jpegSheets } : null;
   } catch (err) {
     console.warn(`ffmpeg の JPEG 出力に失敗しました: ${(err as Error).message}`);
@@ -239,8 +247,20 @@ async function generateThumbstripSheets(
   }
 }
 
-function generatedSheets(dir: string, ext: "webp" | "jpg"): string[] {
-  return readdirSync(dir).filter((file) => new RegExp(`^coarse-\\d{3}\\.${ext}$`).test(file)).sort();
+/**
+ * ffmpeg が実際に吐いたシートを拾う。接頭辞は呼び出し元の level.id と同一でなければ
+ * ならない(`sheetFileName` が組み立てる名前と同じ形)。id を正規表現へ埋め込むと
+ * メタ文字で壊れうるので、前後を文字列一致で剥がして通し番号だけを検査する
+ */
+function generatedSheets(dir: string, levelId: ThumbstripLevelId, ext: "webp" | "jpg"): string[] {
+  const prefix = `${levelId}-`;
+  const suffix = `.${ext}`;
+  return readdirSync(dir)
+    .filter((file) => {
+      if (!file.startsWith(prefix) || !file.endsWith(suffix)) return false;
+      return /^\d{3}$/.test(file.slice(prefix.length, file.length - suffix.length));
+    })
+    .sort();
 }
 
 function levelForGeneratedSheetCount(level: ThumbstripLevel, actualSheetCount: number): ThumbstripLevel {
