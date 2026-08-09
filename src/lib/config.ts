@@ -757,6 +757,24 @@ export interface Config {
        * CLI の --port が指定されていればそちらが優先 */
       port?: number;
     };
+    /** frames --scenes(画面の変化点+静止区間の代表を自動選択して撮る)の
+     * 閾値。省略可(古い config.yaml との互換。--scenes を使わない限り
+     * 読まれず既存挙動は不変)。全キー省略可・既定値は
+     * src/lib/sceneSampling.ts の DEFAULT_SCENE_SAMPLING_CFG。
+     * video-perception-P0 §2.4 */
+    scenes?: {
+      /** scdet の sceneScore がこれ以上なら変化点とみなす */
+      sceneThreshold?: number;
+      /** 変化点をこれ未満の間隔で連続採用しない(av.everySec より大きくすること) */
+      minGapSec?: number;
+      /** 1回の --scenes で撮る上限枚数。CLI の --max-shots が指定されて
+       * いればそちらが優先 */
+      maxShots?: number;
+      /** 静止区間にこの秒ごとに1枚 */
+      frozenShotEverySec?: number;
+      /** 1つの静止区間から取る最大枚数 */
+      frozenMaxShotsPerSpan?: number;
+    };
   };
   av?: {
     everySec?: number;

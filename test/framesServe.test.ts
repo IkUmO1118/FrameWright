@@ -32,6 +32,20 @@ test("parseFramesServeBody: every モードで stepSec が0以下はエラー", 
   assert.throws(() => parseFramesServeBody({ mode: "every" }), /stepSec/);
 });
 
+// video-perception-P0: FrameRequest に mode を足したら parseFramesServeBody にも
+// 足さないと、frames-serve 起動中だけ frames --scenes が 400 で落ちる
+// (framesClient.ts:78 は委譲失敗をフォールバックせず throw する)
+test("parseFramesServeBody: scenes モード(正の maxShots)", () => {
+  const { req } = parseFramesServeBody({ mode: "scenes", maxShots: 60 });
+  assert.deepEqual(req, { mode: "scenes", maxShots: 60 });
+});
+
+test("parseFramesServeBody: scenes モードで maxShots が0以下/欠落はエラー", () => {
+  assert.throws(() => parseFramesServeBody({ mode: "scenes", maxShots: 0 }), /maxShots/);
+  assert.throws(() => parseFramesServeBody({ mode: "scenes", maxShots: -1 }), /maxShots/);
+  assert.throws(() => parseFramesServeBody({ mode: "scenes" }), /maxShots/);
+});
+
 test("parseFramesServeBody: times モードで times が配列でない/数値以外を含むとエラー", () => {
   assert.throws(() => parseFramesServeBody({ mode: "times" }), /times/);
   assert.throws(() => parseFramesServeBody({ mode: "times", times: "90" }), /times/);

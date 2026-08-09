@@ -288,6 +288,28 @@ ocr:
 # frames:
 #   serve:
 #     port: 4311
+#
+#   # frames --scenes(画面の変化点+静止区間の代表を自動選択して撮る)の閾値。
+#   # 全キー省略可・書かない限り既定値(コード側の DEFAULT_SCENE_SAMPLING_CFG。
+#   # src/lib/sceneSampling.ts)がそのまま使われ、--scenes を使わない限り
+#   # frames の既存挙動は完全に不変(video-perception-P0 §2.4)
+#   scenes:
+#     # scdet の sceneScore がこれ以上なら変化点とみなす。
+#     # plan.cursor.scrollMotionThreshold(既定 0.4。誤爆を落とすので高め)より
+#     # 低く取る(変化を拾いたいので低め、という非対称は意図的)
+#     sceneThreshold: 0.25
+#     # 変化点をこれ未満の間隔で連続採用しない。av.everySec(既定5)より
+#     # 大きくすること(motion.json のグリッド自体が5秒間隔なので、これ以下
+#     # だと間引きが1件も発生せず設定が死ぬ)。av.everySec を変えたらここも見直す
+#     minGapSec: 6.0
+#     # 1回の --scenes で撮る上限枚数。10分の収録で --every 10 が撮る60枚と
+#     # 同数に揃えた(比較可能性のため)
+#     maxShots: 60
+#     # 静止区間にこの秒ごとに1枚(60秒未満の静止は1枚、3分以上の静止で
+#     # frozenMaxShotsPerSpan 枚が上限になる式の一部)
+#     frozenShotEverySec: 60
+#     # 1つの静止区間から取る最大枚数
+#     frozenMaxShotsPerSpan: 3
 
 # カーソル座標の取得(record --watch)。OBS の録画ボタンに自動連動する常駐
 # watcher。省略可(既定 localhost:4455・sampleIntervalMs 33)。macOS 専用

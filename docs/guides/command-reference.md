@@ -71,6 +71,7 @@
 | コマンド | 使う場面 |
 |---|---|
 | `frames <dir> --t ... \| --captions \| --every N` | その時刻の絵を確認したいとき(テロップ位置・ワイプ被り・素材の見え方)。`frames/*.png` に出力(実行のたびに古い PNG は全消し) |
+| `frames <dir> --scenes` | **画面が変わった瞬間だけ見たいとき**(一律間隔だと変化点を取り逃す/静止区間を撮りすぎる)。要 `av <dir>` の事前実行。`av.probe/motion.json` の scene score・freeze 区間から変化点+静止区間の代表+端点を自動選択する。上限は `--max-shots`(既定は `config.yaml` の `frames.scenes.maxShots`、省略時60) |
 | `frames <dir> ... --ocr` | 画面内のコード・ターミナル・エラー文をテキストとして読みたいとき。元収録のフル解像度の画面領域を Apple Vision で OCR し `frames/out<秒>s.ocr.json` に書く。macOS 専用・オフライン。非対応環境では警告のうえ PNG 出力のみ続行 |
 | `frames <dir> ... --full-res` | 画面キャプチャ内の文字を絵として鮮明に見たいとき。ベース映像をプロキシではなく元収録のフル解像度にした**合成込み**の still を出す。`--ocr` と併用可 |
 | `frames-serve <dir>` | **JSON 微調整ループ(編集 → `frames --t …` → 確認 → …)を何度も回すとき**。bundle+headless Chrome を暖めたまま待ち受ける opt-in の常駐デーモン。起動していなければ `frames` は従来どおりの単発実行(挙動・出力は不変) |

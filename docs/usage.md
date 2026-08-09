@@ -569,6 +569,34 @@ vision route 不在・still 抽出失敗・`--no-vlm` はいずれも優雅に�
 `cutplan.json` / `approvals.json` は読まない・書かない。
 
 
+## frames のシーン駆動サンプリング(--scenes)
+
+`frames <dir> --t ...` / `--captions` / `--every` に続く 4 つ目のモード。
+`node src/cli.ts av <dir>` が既に測っている `av.probe/motion.json`
+(scene score・freeze 区間)を読み、「画面が変わった瞬間」+「静止区間の
+代表」+「動画の端点」だけを自動で選んで撮る(一律間隔の `--every` と違い、
+10 秒間に何度も画面が変わる区間と 5 分間同じ画面の区間を同じ密度で撮らない)。
+
+```sh
+node src/cli.ts av <dir>              # 前提(要事前実行。無ければ告知して exit 1)
+node src/cli.ts frames <dir> --scenes            # 変化点+静止区間の代表+端点を撮る
+node src/cli.ts frames <dir> --scenes --ocr      # 画面文字も一緒に読みたいとき(主用途)
+node src/cli.ts frames <dir> --scenes --max-shots 30  # 上限枚数を変える(既定は config の frames.scenes.maxShots)
+```
+
+- `--t` / `--captions` / `--every` とは排他。`--ocr` / `--full-res` とは併用可。
+- 前提の `av.probe/motion.json` が古くても(cutplan 編集後に `av` を撮り直して
+  いなくても)警告のうえそのまま使う(`frames/index.json` の古さ警告と同じ
+  非強制の姿勢。強制すると重くなる)。`av --range` で部分測定した
+  `motion.json` を使うと、その旨(範囲が全体をカバーしていないこと)を
+  stdout に告知する。
+- 上限(`--max-shots` または `config.yaml` の `frames.scenes.maxShots`。
+  省略時 60)を超えて間引いた件数は必ず stdout に出る。
+- 閾値(`sceneThreshold` / `minGapSec` / `maxShots` / `frozenShotEverySec` /
+  `frozenMaxShotsPerSpan`)は `config.yaml` の `frames.scenes` で調整できる
+  (全キー省略可。書かない限り `--scenes` を使わない既存の `frames` 挙動は
+  完全に不変)。既定値と根拠は `config.yaml` のコメントを参照。
+
 ## カーソル座標の取得(record --watch)
 
 `node src/cli.ts record --watch` は、OBS の録画ボタンに自動連動してカーソル座標を

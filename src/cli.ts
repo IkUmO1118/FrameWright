@@ -1378,6 +1378,14 @@ program
   .option("--captions", "テロップ全件の一巡監査(各テロップの表示中間で1枚ずつ)")
   .option("--every <sec>", "カット後タイムラインを一定間隔でサンプリング(秒)")
   .option(
+    "--scenes",
+    "画面の変化点+静止区間の代表を自動選択して撮る(要 av <dir> の事前実行)",
+  )
+  .option(
+    "--max-shots <n>",
+    "--scenes の上限枚数(既定は config.yaml の frames.scenes.maxShots、省略時60)",
+  )
+  .option(
     "--ocr",
     "画面 OCR(Apple Vision)でその時刻の画面内テキストを読む(macOS専用。" +
       "非対応環境では警告のうえ PNG 出力のみ続行)",
@@ -1394,19 +1402,24 @@ program
       out?: boolean;
       captions?: boolean;
       every?: string;
+      scenes?: boolean;
+      maxShots?: string;
       ocr?: boolean;
       fullRes?: boolean;
     },
   ) => {
     const cfg = loadConfig(program.opts().config);
-    const picked = [opts.t, opts.captions, opts.every].filter(
+    const picked = [opts.t, opts.captions, opts.every, opts.scenes].filter(
       (v) => v !== undefined,
     ).length;
     if (picked !== 1) {
-      throw new Error("--t / --captions / --every のどれか1つを指定してください");
+      throw new Error("--t / --captions / --every / --scenes のどれか1つを指定してください");
     }
     if (opts.out && !opts.t) {
       throw new Error("--out は --t と一緒に使ってください");
+    }
+    if (opts.maxShots !== undefined && !opts.scenes) {
+      throw new Error("--max-shots は --scenes と一緒に使ってください");
     }
     let req: FrameRequest;
     if (opts.captions) {
@@ -1415,6 +1428,16 @@ program
       const step = parseT(opts.every);
       if (step === null) throw new Error(`間隔を解釈できません: ${opts.every}(例: 10)`);
       req = { mode: "every", stepSec: step };
+    } else if (opts.scenes) {
+      let maxShots = cfg.frames?.scenes?.maxShots ?? 60;
+      if (opts.maxShots !== undefined) {
+        const n = Number(opts.maxShots);
+        if (!Number.isFinite(n) || n <= 0) {
+          throw new Error(`--max-shots は正の整数で指定してください: ${opts.maxShots}`);
+        }
+        maxShots = Math.floor(n);
+      }
+      req = { mode: "scenes", maxShots };
     } else {
       const times = opts.t!.split(",").map((s) => {
         const t = parseT(s);

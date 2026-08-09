@@ -46,6 +46,13 @@ import type { Config } from "../lib/config.ts";
 import { resolveCanvas, screenContentRect } from "../lib/profile.ts";
 import type { Manifest } from "../types.ts";
 import type { RenderProps } from "../lib/renderPropsTypes.ts";
+import { AV_DIR, MOTION_FILE } from "./av.ts";
+import type { MotionReport } from "./av.ts";
+import {
+  DEFAULT_SCENE_SAMPLING_CFG,
+  selectSceneTimes,
+} from "../lib/sceneSampling.ts";
+import type { SceneSamplingCfg, SceneTimeReason } from "../lib/sceneSampling.ts";
 
 export interface FrameShot {
   /** 指定された時刻(秒。times は axis の軸 / captions・every は出力の秒) */
@@ -62,11 +69,14 @@ export interface FrameShot {
 }
 
 /** 何のフレームを撮るか。times = 時刻指定 / captions = テロップ全件の
- * 一巡監査(各テロップの表示中間で1枚)/ every = 出力全体の定間隔サンプル */
+ * 一巡監査(各テロップの表示中間で1枚)/ every = 出力全体の定間隔サンプル /
+ * scenes = 画面の変化点+静止区間の代表を自動選択(要 av <dir>。
+ * video-perception-P0 §2.1) */
 export type FrameRequest =
   | { mode: "times"; times: number[]; axis: "source" | "output" }
   | { mode: "captions" }
-  | { mode: "every"; stepSec: number };
+  | { mode: "every"; stepSec: number }
+  | { mode: "scenes"; maxShots: number };
 
 export async function frames(
   dir: string,
@@ -108,7 +118,7 @@ export async function framesEngine(
     (overlays.inserts ?? []).filter((i) => existsSync(join(dir, i.file))),
   );
   const maxOut = Math.max(0, props.durationSec - 1 / props.fps);
-  const targets = buildTargets(req, props, maxOut, timeline);
+  const targets = buildTargets(req, props, maxOut, timeline, dir, cfg);
   if (targets.length === 0) {
     throw new Error(
       req.mode === "captions"
@@ -187,8 +197,14 @@ function buildTargets(
   props: RenderProps,
   maxOut: number,
   timeline: TimelineEntry[],
+  dir: string,
+  cfg: Config,
 ): Target[] {
   const clamp = (sec: number) => Math.min(Math.max(0, sec), maxOut);
+
+  if (req.mode === "scenes") {
+    return buildSceneTargets(req, dir, cfg, maxOut, clamp);
+  }
 
   if (req.mode === "captions") {
     // props.captions は出力秒へ変換・表示対象の絞り込みが済んだ「実際に
@@ -239,6 +255,80 @@ function buildTargets(
     }
     return { requested: t, outSec: clamp(outSec), notes };
   });
+}
+
+const SCENE_REASON_LABEL: Record<SceneTimeReason, string> = {
+  edge: "端点",
+  scene: "画面変化",
+  frozen: "静止区間",
+};
+
+/**
+ * scenes モードの対象時刻を組み立てる(video-perception-P0 §2.2)。
+ * av.probe/motion.json(要 av <dir> の事前実行)を読み、selectSceneTimes
+ * (src/lib/sceneSampling.ts の純関数)で時刻を選ぶ。前提資産が無ければ
+ * 告知して例外(共通規約 §2.5。material-fit / bgm-fit と同じ「前提エラー」の形)。
+ * motion.json のキャッシュキーの陳腐化は判定しない(§2.5 後半)。
+ */
+function buildSceneTargets(
+  req: { mode: "scenes"; maxShots: number },
+  dir: string,
+  cfg: Config,
+  maxOut: number,
+  clamp: (sec: number) => number,
+): Target[] {
+  const motionPath = join(dir, AV_DIR, MOTION_FILE);
+  if (!existsSync(motionPath)) {
+    throw new Error(
+      "av.probe/motion.json がありません。先に `node src/cli.ts av <dir>` を実行してください。",
+    );
+  }
+  const motion = JSON.parse(readFileSync(motionPath, "utf8")) as MotionReport;
+
+  // range(motion.json 測定時の出力秒範囲)が全域をカバーしていないと、
+  // motion[0]/motion[last] が動画全体の端点ではなく部分測定の端点になる。
+  // エラーにはしない(§2.5 後半の非強制の姿勢)が、AI/人間が気づけるよう告知する
+  const isFullRange = motion.range.startSec <= 0.01 && motion.range.endSec >= maxOut - 0.5;
+  if (!isFullRange) {
+    console.log(
+      `--scenes: av.probe/motion.json は範囲 ${motion.range.startSec}s〜${motion.range.endSec}s のみ` +
+        `(av --range で部分測定されたもの)。動画全体をカバーしていません。`,
+    );
+  }
+
+  const sceneCfg = cfg.frames?.scenes ?? {};
+  const avEverySec = cfg.av?.everySec ?? 5;
+  const effectiveCfg: SceneSamplingCfg = {
+    sceneThreshold: sceneCfg.sceneThreshold ?? DEFAULT_SCENE_SAMPLING_CFG.sceneThreshold,
+    minGapSec: sceneCfg.minGapSec ?? DEFAULT_SCENE_SAMPLING_CFG.minGapSec,
+    maxShots: req.maxShots,
+    frozenShotEverySec: sceneCfg.frozenShotEverySec ?? DEFAULT_SCENE_SAMPLING_CFG.frozenShotEverySec,
+    frozenMaxShotsPerSpan:
+      sceneCfg.frozenMaxShotsPerSpan ?? DEFAULT_SCENE_SAMPLING_CFG.frozenMaxShotsPerSpan,
+  };
+  if (effectiveCfg.minGapSec <= avEverySec) {
+    console.warn(
+      `警告: frames.scenes.minGapSec(${effectiveCfg.minGapSec})が av.everySec(${avEverySec})以下です。` +
+        `motion.json のグリッド間隔以下のため、変化点の間引きが機能しません。`,
+    );
+  }
+
+  const { times, dropped } = selectSceneTimes(motion, effectiveCfg);
+  // "no silent caps"(共通規約 §2.2.4 末尾): 間引き件数は必ず stdout に出す。
+  // 0 件のときに「上限超のため間引き」と書くと事実と食い違うので文言を分ける
+  const capped = dropped.scene > 0 || dropped.frozen > 0;
+  console.log(
+    `--scenes: ${times.length} 件のフレームを選択しました` +
+      (capped
+        ? `(上限 ${effectiveCfg.maxShots} 件のため間引き: 画面変化 ${dropped.scene} 件 / 静止区間 ${dropped.frozen} 件)`
+        : `(上限 ${effectiveCfg.maxShots} 件・間引きなし)`),
+  );
+
+  return times.map((st) => ({
+    requested: st.outSec,
+    outSec: clamp(st.outSec),
+    notes: [SCENE_REASON_LABEL[st.reason]],
+  }));
 }
 
 /**

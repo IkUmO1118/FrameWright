@@ -63,7 +63,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
   {
     title: "中身を知る(知覚)",
     commands: [
-      { name: "frames", summary: "指定時刻を最終合成の見た目で PNG に" },
+      { name: "frames", summary: "指定時刻・変化点(--scenes)を最終合成の見た目で PNG に" },
       { name: "frames-serve", summary: "frames を高速化する常駐サーバ(opt-in)" },
       { name: "probe", summary: "素材・A/V の知覚をまとめて実行" },
       { name: "record", summary: "収録に連動してカーソル座標を記録(macOS)" },

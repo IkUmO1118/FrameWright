@@ -286,7 +286,13 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
   - 一巡監査は時刻リストを自作せず専用モードを使う: `--captions` で
     テロップ全件(各テロップの表示中間で1枚。どのテロップかはコマンド
     出力に付く)、`--every 10` でカット後タイムラインを10秒間隔+最終
-    フレームでサンプリング
+    フレームでサンプリング、**`--scenes` で画面が変わった瞬間だけ**(要
+    `av <dir>` の事前実行。`av.probe/motion.json` の scene score・freeze
+    区間から変化点+静止区間の代表+端点を決定論で自動選択する。一律間隔
+    だと変化点を取り逃す/静止区間を撮りすぎる問題を解く。上限は
+    `--max-shots`(既定は `config.yaml` の `frames.scenes.maxShots`、
+    省略時60)。前提の `motion.json` が無ければ「先に `av <dir>` を実行して
+    ください」と告知して止まる)
   - 実行のたびに `frames/` 内の古い PNG は全削除される。逆に言うと、
     JSON 編集後に frames を撮り直さず古い PNG を Read すると編集前の絵を
     見ることになるので、編集したら必ず撮り直す。これはコードでも検出される:
@@ -519,6 +525,7 @@ node src/cli.ts describe <dir> --json  # 機械可読な完全射影(発言・�
 node src/cli.ts frames <dir> --t <times>  # 指定時刻を最終合成の見た目で PNG に
 node src/cli.ts frames <dir> --captions   # テロップ全件を一巡監査(1件1枚)
 node src/cli.ts frames <dir> --every 10   # カット後全体を10秒間隔でサンプル
+node src/cli.ts frames <dir> --scenes     # 画面の変化点+静止区間の代表を自動選択(要 av <dir>)
 node src/cli.ts plan <dir> --cuts-only  # カット判断だけやり直す(章・タイトル・概要欄は触らない)
 node src/cli.ts frames <dir> --every 10 --ocr  # 画面内テキストを Apple Vision で OCR(frames/*.ocr.json)
 node src/cli.ts frames <dir> --t 90 --full-res  # ベース映像を元収録のフル解像度にして合成 still を鮮明に
