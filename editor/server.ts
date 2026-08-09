@@ -24,6 +24,13 @@ import { renderCfgWithDesign } from "../src/lib/designAsset.ts";
 import { resolveDesign } from "../src/lib/design.ts";
 import { existingDesignAssets, prepareDesignAssetBundle } from "../src/lib/designStill.ts";
 import {
+  isWaveformEntryFresh,
+  referencedBinNames,
+  WAVEFORM_GENERATION,
+  waveformBinName,
+} from "../src/lib/waveformCache.ts";
+import type { WaveformEntryKey, WaveformIndex } from "../src/lib/waveformCache.ts";
+import {
   buildEditorClientAssets,
   buildEngineDevAssets,
   createEditorClientReloader,
@@ -2102,8 +2109,10 @@ async function prepareEditorDesignAssets(dir: string, cfg: Config): Promise<void
 
 /** 波形の分解能(1秒あたりのピーク数)。16kHz なら 160 サンプル/ピーク */
 const PEAK_RATE = 100;
-/** ピークのキャッシュ(キー = 対象の相対パス。"" はマイク音声) */
+/** ピークのキャッシュ(キー = resolve(dir) + 対象の相対パス。"" はマイク音声) */
 const peaksCache = new Map<string, { key: string; body: string }>();
+const peaksInflight = new Map<string, Promise<string>>();
+let waveformIndexQueue: Promise<void> = Promise.resolve();
 
 /**
  * タイムラインの波形表示用に音声のピーク列を作る。
@@ -2113,10 +2122,12 @@ const peaksCache = new Map<string, { key: string; body: string }>();
  * ファイルは空のピークを返す=クライアントは波形を描かないだけ)
  */
 async function getPeaks(dir: string, rel: string | null): Promise<string> {
+  const resolvedDir = resolve(dir);
+  const source = rel ?? "";
   let abs: string;
   if (rel) {
     abs = normalize(join(dir, rel));
-    if (!abs.startsWith(resolve(dir) + sep) || !existsSync(abs)) {
+    if (!abs.startsWith(resolvedDir + sep) || !existsSync(abs)) {
       throw new Error(`not found: ${rel}`);
     }
   } else {
@@ -2126,17 +2137,49 @@ async function getPeaks(dir: string, rel: string | null): Promise<string> {
     abs = join(dir, manifest.audio.micWav);
   }
   const st = statSync(abs);
-  const key = `${abs}:${st.mtimeMs}:${st.size}`;
-  const hit = peaksCache.get(rel ?? "");
-  if (hit?.key === key) return hit.body;
+  const key: WaveformEntryKey = {
+    generation: WAVEFORM_GENERATION,
+    source,
+    mtimeMs: st.mtimeMs,
+    size: st.size,
+    rate: PEAK_RATE,
+  };
+  const cacheKey = `${resolvedDir}\0${source}`;
+  const keyString = JSON.stringify(key);
+  const hit = peaksCache.get(cacheKey);
+  if (hit?.key === keyString) return hit.body;
+
+  const pendingKey = `${cacheKey}\0${keyString}`;
+  const pending = peaksInflight.get(pendingKey);
+  if (pending) return await pending;
+
+  const promise = getPeaksUncached(dir, abs, rel, key).then((body) => {
+    peaksCache.set(cacheKey, { key: keyString, body });
+    return body;
+  }).finally(() => {
+    peaksInflight.delete(pendingKey);
+  });
+  peaksInflight.set(pendingKey, promise);
+  return await promise;
+}
+
+async function getPeaksUncached(
+  dir: string,
+  abs: string,
+  rel: string | null,
+  key: WaveformEntryKey,
+): Promise<string> {
+  const diskHit = readWaveformFromDisk(dir, key);
+  if (diskHit !== null) return diskHit;
 
   let body: string;
+  let cacheOnDisk = true;
   if (rel) {
     try {
       if (!hasAudioStream(abs)) {
         // 無音素材(HyperFrames カード等)。警告は出さない=正常系
         body = JSON.stringify({ rate: PEAK_RATE, durationSec: 0, peaks: "" });
-        peaksCache.set(rel ?? "", { key, body });
+        await writeWaveformToDisk(dir, key, body);
         return body;
       }
       const pcm = await decodeAudio(abs);
@@ -2145,13 +2188,117 @@ async function getPeaks(dir: string, rel: string | null): Promise<string> {
       // 音声ストリームなし・非対応コーデック等。波形なしとして扱う
       console.warn(`波形をデコードできません(${rel}): ${(e as Error).message}`);
       body = JSON.stringify({ rate: PEAK_RATE, durationSec: 0, peaks: "" });
+      cacheOnDisk = false;
     }
   } else {
-    const { sampleRate, channels, samples } = readWav(abs);
-    body = peaksBody(samples, sampleRate, channels);
+    try {
+      const { sampleRate, channels, samples } = readWav(abs);
+      body = peaksBody(samples, sampleRate, channels);
+    } catch (e) {
+      console.warn(`波形をデコードできません(マイク音声): ${(e as Error).message}`);
+      body = JSON.stringify({ rate: PEAK_RATE, durationSec: 0, peaks: "" });
+      cacheOnDisk = false;
+    }
   }
-  peaksCache.set(rel ?? "", { key, body });
+  if (cacheOnDisk) await writeWaveformToDisk(dir, key, body);
   return body;
+}
+
+function waveformIndexPath(dir: string): string {
+  return join(dir, "timeline.probe", "waveform.json");
+}
+
+function waveformBinDir(dir: string): string {
+  return join(dir, "timeline.probe", "waveform");
+}
+
+function emptyWaveformIndex(): WaveformIndex {
+  return { generation: WAVEFORM_GENERATION, entries: {} };
+}
+
+function readWaveformIndex(dir: string): WaveformIndex {
+  try {
+    const parsed = JSON.parse(readFileSync(waveformIndexPath(dir), "utf8")) as WaveformIndex;
+    if (parsed.generation !== WAVEFORM_GENERATION || !parsed.entries || typeof parsed.entries !== "object") {
+      return emptyWaveformIndex();
+    }
+    return parsed;
+  } catch {
+    return emptyWaveformIndex();
+  }
+}
+
+function readWaveformFromDisk(dir: string, key: WaveformEntryKey): string | null {
+  const index = readWaveformIndex(dir);
+  const entry = index.entries[key.source];
+  if (!isWaveformEntryFresh(entry, key)) return null;
+  if (typeof entry.durationSec !== "number" || typeof entry.bins !== "number" || entry.bins < 0) return null;
+  if (entry.bins === 0) return JSON.stringify({ rate: PEAK_RATE, durationSec: 0, peaks: "" });
+  const expectedFile = `timeline.probe/waveform/${waveformBinName(key)}`;
+  if (entry.file !== expectedFile) return null;
+  const binPath = join(dir, entry.file);
+  if (!existsSync(binPath)) return null;
+  try {
+    const bin = readFileSync(binPath);
+    if (bin.length !== entry.bins) return null;
+    return JSON.stringify({
+      rate: PEAK_RATE,
+      durationSec: entry.durationSec,
+      peaks: bin.toString("base64"),
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function writeWaveformToDisk(dir: string, key: WaveformEntryKey, body: string): Promise<void> {
+  const queued = waveformIndexQueue.catch(() => undefined).then(() => {
+    writeWaveformToDiskSync(dir, key, body);
+  });
+  waveformIndexQueue = queued.catch(() => undefined);
+  try {
+    await queued;
+  } catch (e) {
+    console.warn(`波形キャッシュを書き込めません: ${(e as Error).message}`);
+  }
+}
+
+function writeWaveformToDiskSync(dir: string, key: WaveformEntryKey, body: string): void {
+  const data = JSON.parse(body) as { durationSec: number; peaks: string };
+  const bin = data.peaks ? Buffer.from(data.peaks, "base64") : Buffer.alloc(0);
+  const bins = bin.length;
+  const root = join(dir, "timeline.probe");
+  const binDir = waveformBinDir(dir);
+  mkdirSync(binDir, { recursive: true });
+  const nextIndex = readWaveformIndex(dir);
+  if (nextIndex.generation !== WAVEFORM_GENERATION) {
+    nextIndex.generation = WAVEFORM_GENERATION;
+    nextIndex.entries = {};
+  }
+  let file: string | undefined;
+  if (bins > 0) {
+    const binName = waveformBinName(key);
+    file = `timeline.probe/waveform/${binName}`;
+    const finalBin = join(binDir, binName);
+    const tmpBin = `${finalBin}.tmp`;
+    writeFileSync(tmpBin, bin);
+    renameSync(tmpBin, finalBin);
+  }
+  nextIndex.entries[key.source] = {
+    key,
+    durationSec: data.durationSec,
+    bins,
+    ...(file ? { file } : {}),
+  };
+  const referenced = referencedBinNames(nextIndex);
+  for (const name of existsSync(binDir) ? readdirSync(binDir) : []) {
+    if (name.endsWith(".bin") && !referenced.has(name)) rmSync(join(binDir, name), { force: true });
+  }
+  const indexPath = waveformIndexPath(dir);
+  const tmpIndex = `${indexPath}.tmp`;
+  mkdirSync(root, { recursive: true });
+  writeFileSync(tmpIndex, `${JSON.stringify(nextIndex, null, 2)}\n`);
+  renameSync(tmpIndex, indexPath);
 }
 
 /**
