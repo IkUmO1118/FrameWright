@@ -356,6 +356,13 @@ record:
 #   minSegmentSec: 10.0
 #   # index.json に載せる OCR 行数(全行は Layer 1 の ocr/*.json)
 #   indexLines: 8
+#   # `screen --summarize`(video-perception-P4。区間へ VLM 1 行要約を付ける)の
+#   # コスト制御。`--summarize` を使わない限り一切読まれない(既定オフ=バイト等価)
+#   summarize:
+#     # 1回の --summarize で VLM に送る上限区間数。超過分は長い区間を優先する
+#     maxSegments: 40
+#     # 1回の VLM 呼び出しの出力トークン上限(1行40字なので既定は小さい)
+#     maxOutputTokens: 64
 
 # GUI エディタ(npm run editor)
 editor:

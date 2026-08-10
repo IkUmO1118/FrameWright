@@ -130,8 +130,11 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
   結果。**cutplan 非依存**=元収録ファイルの mtime+size・`screenRegion`・
   OCR 言語だけをキーにする内容アドレス式キャッシュ。だからカットを編集し直しても
   新しくサンプルされた秒だけ OCR すれば済む)/ `stills/<segId>.png`(`--stills`
-  時のみ)。`materials.probe/` `av.probe/` と同じく実行のたびの全消しはしない
-  差分更新型。書き込み成功後に未参照の `ocr/*.json` を掃除する) /
+  または `--summarize` 時のみ)。`materials.probe/` `av.probe/` と同じく
+  実行のたびの全消しはしない差分更新型。書き込み成功後に未参照の `ocr/*.json`
+  を掃除する。各区間の `summary`(video-perception-P4。`screen --summarize`
+  だけが埋める VLM の1行要約+`confidence`+`provenance`。既定 `null`で
+  `schemaVersion` は変わらない)もこの中) /
   `timeline.probe/`(GUI エディタが書くタイムライン用の差分更新型キャッシュ。
   `waveform.json` + `waveform/*.bin`、`thumbstrip.json` + `thumbstrip/*.webp` / `*.jpg`。
   編集データではなく、削除しても次回エディタ表示で再生成される) /
@@ -421,6 +424,18 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
     が古い」と警告する(exit 0)
   - **OCR 非対応環境(macOS 以外)でも区間トラックは成立する**(scene score
     だけで境界を決め、`ocr` が null の区間になる)
+  - **`--summarize`(video-perception-P4。本母艦で唯一の外部通信)**: 区間へ
+    VLM(vision route)1行要約を付ける。**外部へ送るのは区間代表 still 1枚 +
+    その区間の OCR 先頭数行だけ**(動画・transcript・編集ファイル・時刻/座標は
+    送らない・生成させない)。`--stills` を暗黙に含意する。後段検証
+    (40字超過・数値+単位・前後への言及のいずれかに該当したら破棄して
+    `summary: null`)を通ったものだけ書く。vision route 未設定/AI 未設定は
+    警告のうえ VLM 0回で決定論のまま終了、capability 不足は1区間目で打ち切り、
+    個別の呼び出し失敗はその区間だけ `null` にして続行する。cutplan 編集後の
+    再実行では `representativeSourceSec` が一致する旧区間から summary を
+    provenance ごと引き継ぐ(`--force` なしなら再 VLM しない)。`--summarize`
+    を付けない限り `screen` は1バイトも変わらない(VLM 0回)。画面に機密が
+    映る収録では使わないこと
 - `node src/cli.ts bgm-fit <dir>` … **既存の `bgm.json` の音量/duck/フェードを
   実測から補正する**コマンド(`plan-bgm` が BGM を**作る**側、こちらは**直す**側)。
   要 `av <dir>` の事前実行(`av.probe/sound.json` が無ければ告知して exit 1)。
@@ -576,6 +591,7 @@ node src/cli.ts effect-check <dir>  # 演出(zoom/blur/annotation)を検品す�
 node src/cli.ts effect-check <dir> --no-vlm  # 決定論チェックのみ(vision route 未設定でも同じ結果になる)
 node src/cli.ts av <dir>  # keep後タイムラインの motion/sound を知る(av.probe/*.json + motion.strip.png)
 node src/cli.ts screen <dir>  # 要 av 事前実行。画面状態の区間トラックを作る(screen.probe/index.json。OCR行のJaccard AND sceneScore で境界判定・2層キャッシュ)
+node src/cli.ts screen <dir> --summarize  # 区間へ VLM 1行要約を付ける(本母艦で唯一の外部通信。still 1枚+OCR数行だけ送る)
 node src/cli.ts av <dir> --range 10-25 --motion-only  # 出力10-25秒の動きだけ調べる
 node src/cli.ts bgm-fit <dir>  # 要 av <dir> 事前実行。BGM の音量/duck/フェードを実測から補正提案(bgm-fit.json / bgm-fit.suggested.json)。決定論のみ(LLM不使用)
 node src/cli.ts style-profile --from <path> [--from <path> ...] [--name <名前>]  # 任意の動画/収録からスタイルプロファイルを抽出(テンポ・字幕密度/位置・ラウドネス・構成+補正デルタ)。決定論のみ・channel直下の style.probe/<名前>.json に書く(<dir> ではなく --from 主導)

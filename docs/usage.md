@@ -661,6 +661,63 @@ node src/cli.ts probe <dir> --all       # materials → av → screen をまと�
 `frames` は人間/AI が目で見る枚数、`screen` は機械が畳む材料で較正の目標が
 違うため、独立に動かせる必要がある。
 
+### VLM 区間要約(screen --summarize、video-perception-P4)
+
+`screen.probe/index.json` の各区間は OCR の生テキストしか持たず、
+「画素ゲートを走らせている場面」のような読みは索引にも `describe` にも
+出てこない。`screen <dir> --summarize` は区間ごとに VLM(vision route)へ
+still 1枚を見せ、**1行の日本語要約**を付ける。**本母艦で唯一の外部通信**。
+
+```sh
+node src/cli.ts screen <dir> --summarize          # 区間へ VLM 1行要約を付ける
+node src/cli.ts screen <dir> --summarize --force  # 既存 summary も引き継がず全再生成
+```
+
+**送るもの・送らないもの**(これがこのコマンドの全て。それ以外は一切送らない):
+
+| 送る | 送らない |
+|---|---|
+| 区間代表 still 1枚(`screen.probe/stills/scr-NNN.png`) | 動画そのもの・連続フレーム |
+| その区間の OCR 先頭数行(`index.json` の `ocr.lines`。`indexLines` 既定8行) | OCR 全行・transcript・発話・編集ファイル |
+| — | 区間の開始/終了時刻(絶対時刻は送らない。座標・秒数も生成させない) |
+
+**`--summarize` は `--stills` を暗黙に含意する**(still が無ければその場で撮る)。
+
+**後段検証(この順に適用。1つでも該当したら破棄して `summary: null`)**:
+
+1. **R1(長さ)**: `[...text].length`(コードポイント数)が40を超えたら破棄
+   (`text.length` ではない。サロゲートペアを2文字と誤って数えると正当な
+   40字の要約を誤破棄する)。
+2. **R2(数値+単位)**: `/\d\s*(秒|分|時間|ms|s\b|フレーム|コマ|f\b)/u` に
+   マッチしたら破棄(単位を伴わない数値は正当。「1834件」は通るが
+   「1834フレーム」は破棄する)。
+3. **R3(前後への言及)**: `/(この(後|前|直後|直前)|次の場面|先ほど|さきほど|以降|以前)/u`
+   にマッチしたら破棄。
+
+**優雅な劣化**: `ai.routes.vision` が未設定/AI 全体が未設定なら警告のうえ
+**VLM を1回も呼ばず** `summary` は `null` のまま(既定 = `--summarize` を
+付けない限りバイト等価)。vision profile の capability 不足
+(`structuredOutput=none` / `imageInput=false`)は**1区間目で検出して
+打ち切る**(2区間目以降を呼ばない)。それ以外の呼び出し失敗・JSON パース
+失敗・後段検証(R1〜R3)抵触は**その区間だけ** `summary: null` にして
+`warnings[]` に積み、続行する。
+
+**区間が畳み直されたときの引き継ぎ**: `--force` を付けない限り、新区間の
+`representativeSourceSec` が旧 `index.json` の区間と一致すれば、`summary` を
+`provenance` ごと引き継いで VLM を呼ばない(cutplan を編集し直しても
+40区間ぶんの VLM 呼び出しが毎回発生しない)。`--force` は引き継がず全再生成する。
+
+**コスト制御**は `config.yaml` の `screen.summarize`(`maxSegments` 既定40・
+`maxOutputTokens` 既定64)。超過分は長い区間を優先し、切った件数を stdout に出す。
+
+`--summarize` を付けない限り `screen` の挙動・出力は導入前と1バイトも
+変わらない(VLM は0回呼ばれる)。`describe` / `index` / `search` は
+`summary.text` を title/1行要約の第一優先として既に読んでいるので
+(video-perception-P1/P2で実装済み)、`summary` が埋まれば自動でそちらが使われる。
+
+**画面に機密情報が映る収録では `--summarize` を使わないこと**(still 1枚と
+OCR 数行が外部の vision route へ送信される)。
+
 ### 索引への視覚投入(index / search、video-perception-P2)
 
 `node src/cli.ts index` は `screen.probe/index.json` があれば読み、**区間

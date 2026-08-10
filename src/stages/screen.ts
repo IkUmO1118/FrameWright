@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../lib/config.ts";
-import { DEFAULT_AV_EVERY_SEC, resolveScreenCfg } from "../lib/config.ts";
+import { DEFAULT_AV_EVERY_SEC, resolveAiRuntimeConfig, resolveScreenCfg } from "../lib/config.ts";
 import { selectSceneTimes } from "../lib/sceneSampling.ts";
 import type { SceneSamplingCfg } from "../lib/sceneSampling.ts";
 import { foldScreenSegments, normalizeOcrLines } from "../lib/screenSegments.ts";
@@ -34,6 +34,23 @@ import { buildScreenStill as buildScreenStillDefault } from "../lib/screenStill.
 import { AV_DIR, MOTION_FILE } from "./av.ts";
 import type { MotionReport } from "./av.ts";
 import type { Manifest, Region } from "../types.ts";
+// video-perception-P4: `screen --summarize`(§docs/plans/2026-08-10-
+// video-perception-p4-vlm-segment-summary-design.md)。純関数(後段検証
+// R1〜R3・選定・プロンプト・応答検査・引き継ぎ判定)は screenSummary.ts。
+// ここは I/O(completeAi 呼び出し)だけを持つ(索引 §2.9)。
+import {
+  buildInheritedSummaryMap,
+  buildScreenSummaryPrompt,
+  checkSummaryText,
+  parseScreenSummaryResponse,
+  screenSummaryResponseSchema,
+  selectSummarizeTargets,
+  SCREEN_SUMMARY_SCHEMA_NAME,
+} from "../lib/screenSummary.ts";
+import type { ScreenSummary } from "../lib/screenSummary.ts";
+import { completeAi as completeAiDefault } from "../lib/ai/client.ts";
+import { AiProviderError } from "../lib/ai/http.ts";
+import type { AiRequest, AiResponse } from "../lib/ai/types.ts";
 
 export const SCREEN_DIR = "screen.probe";
 export const SCREEN_INDEX_FILE = "index.json";
@@ -46,13 +63,19 @@ export interface ScreenOptions {
   stills?: boolean;
   /** Layer 1・Layer 2 の両方のキャッシュを無視して全再計算する */
   force?: boolean;
+  /** video-perception-P4: 区間へ VLM 1 行要約を付ける。省略時 false(VLM を
+   * 一切呼ばない。既定オフ=バイト等価。§2.5) */
+  summarize?: boolean;
 }
 
-/** OCR 実行・still 抽出を注入可能にする(テストが実 ffmpeg/Apple Vision を
- * 呼ばずに runOcr の呼び出し回数を数えられるようにするための穴。§3.2) */
+/** OCR 実行・still 抽出・VLM 呼び出しを注入可能にする(テストが実
+ * ffmpeg/Apple Vision/AI を呼ばずに呼び出し回数を数えられるようにするための
+ * 穴。§3.2・P4 §3.1)。既存の2つ(runOcr/buildScreenStill)は変えない */
 export interface ScreenDeps {
   runOcr?: (imagePath: string, screenRegion: Region, opts: RunOcrOptions) => Promise<OcrResult | null>;
   buildScreenStill?: (dir: string, manifest: Manifest, sourceSec: number, outPath: string) => Promise<string>;
+  /** video-perception-P4。省略時は実際の completeAi(src/lib/ai/client.ts) */
+  completeAi?: (req: AiRequest, cfg: Config) => Promise<AiResponse>;
 }
 
 export interface ScreenParams {
@@ -79,8 +102,8 @@ export interface ScreenSegmentOut {
   /** --stills 時のみ "stills/<id>.png"。既定 null */
   still: string | null;
   ocr: { lines: string[]; lineCount: number; file: string } | null;
-  /** P4 が埋める。P1 では常に null(§2.4) */
-  summary: null;
+  /** video-perception-P4 が埋める。`--summarize` を使わない限り常に null(§2.4) */
+  summary: ScreenSummary | null;
 }
 
 export interface ScreenIndex {
@@ -183,7 +206,15 @@ export async function screen(
     languages,
   };
 
-  if (opts.force !== true) {
+  // video-perception-P4: `--summarize` のときは Layer 2 の早期 return を
+  // 使わない。理由は2つ: (1) キャッシュ一致時でも旧 index.json には
+  // summary が無いことがある(前回は --summarize を付けなかった等)ので、
+  // 早期 return すると summary を埋める機会が無くなる。(2) §2.4.1 の
+  // representativeSourceSec 引き継ぎは「今回の index.json を書く直前に
+  // 旧 index.json を読む」という手順を前提にしており、早期 return では
+  // その手順自体が起きない。opts.summarize が false/未指定のときは
+  // この条件は従来と完全に同じ(バイト等価。T14)
+  if (opts.force !== true && opts.summarize !== true) {
     const cached = readCachedIndex(indexPath, layer2Key);
     if (cached) {
       console.log(`screen: ${((Date.now() - startedAt) / 1000).toFixed(1)}s で完了(キャッシュ一致・OCR/ffmpeg なし)`);
@@ -243,13 +274,16 @@ export async function screen(
   };
   const segments = foldScreenSegments(samples, foldCfg);
 
-  if (opts.stills === true) mkdirSync(join(outDir, SCREEN_STILLS_SUBDIR), { recursive: true });
+  // P4 §2.2: `--summarize` は代表 still を要求するので `--stills` を暗黙に
+  // 含意する(still が無ければその場で撮る)
+  const effectiveStills = opts.stills === true || opts.summarize === true;
+  if (effectiveStills) mkdirSync(join(outDir, SCREEN_STILLS_SUBDIR), { recursive: true });
 
   const segmentsOut: ScreenSegmentOut[] = [];
   for (const seg of segments) {
     const rep = samples[seg.representativeIndex];
     let still: string | null = null;
-    if (opts.stills === true) {
+    if (effectiveStills) {
       const stillRelPath = join(SCREEN_STILLS_SUBDIR, `${seg.id}.png`);
       await buildStillFn(dir, manifest, rep.sourceSec, join(dir, SCREEN_DIR, stillRelPath));
       still = stillRelPath;
@@ -291,6 +325,15 @@ export async function screen(
     segments: segmentsOut,
     warnings: [],
   };
+
+  // video-perception-P4: 旧 index.json(この書き込みで上書きされる前の内容)
+  // をここで読む。§2.4.1 の representativeSourceSec 引き継ぎは「新しい
+  // index.json を書く直前の状態」が旧区間の定義そのものなので、この
+  // タイミングでしか正しく読めない
+  if (opts.summarize === true) {
+    await summarizeSegments(dir, index, screenCfg.summarize, cfg, opts, deps, indexPath);
+  }
+
   writeFileSync(indexPath, JSON.stringify(index, null, 2));
 
   // §2.5.4 mark-and-sweep: 今回の実行で使ったサンプル秒(times 由来。代表以外の
@@ -311,6 +354,143 @@ export async function screen(
   console.log(`screen: ${((Date.now() - startedAt) / 1000).toFixed(1)}s で完了`);
 
   return index;
+}
+
+/** 旧 index.json から `representativeSourceSec → summary` の引き継ぎ元を読む
+ * (P4 §2.4.1)。ファイルが無い/壊れている/`--force` のときは空(優雅な劣化。
+ * 「未実行は異常ではない」と同じ姿勢) */
+function readInheritedSummaries(indexPath: string, opts: ScreenOptions): Map<number, ScreenSummary> {
+  if (opts.force === true) return new Map(); // §2.4.1: --force は引き継がず全再生成(T13)
+  if (!existsSync(indexPath)) return new Map();
+  try {
+    const old = JSON.parse(readFileSync(indexPath, "utf8")) as {
+      segments?: Array<{ representativeSourceSec?: unknown; summary?: unknown }>;
+    };
+    const rows = (old.segments ?? [])
+      .filter((s): s is { representativeSourceSec: number; summary: unknown } => typeof s.representativeSourceSec === "number")
+      .map((s) => ({
+        representativeSourceSec: s.representativeSourceSec,
+        summary: (s.summary ?? null) as ScreenSummary | null,
+      }));
+    return buildInheritedSummaryMap(rows);
+  } catch {
+    return new Map();
+  }
+}
+
+/**
+ * video-perception-P4: `index.segments[].summary` を VLM で埋める(I/O 層。
+ * 純関数は screenSummary.ts)。優雅な劣化(§2.5)を実装する:
+ *   - vision route 未設定 / AI 未設定 → 警告のうえ 0 回呼び出しで return(決定論のまま)
+ *   - capability 不足(structuredOutput=none / imageInput=false)の
+ *     AiProviderError → 1区間目で捕捉し打ち切る(以降の区間を呼ばない)
+ *   - それ以外の呼び出し失敗・JSON パース失敗・R1〜R3 抵触
+ *     → その区間だけ summary: null + warnings に積んで続行
+ * `index` と `index.warnings` を直接書き換える(呼び出し側が writeFileSync する)。
+ */
+async function summarizeSegments(
+  dir: string,
+  index: ScreenIndex,
+  summarizeCfg: { maxSegments: number; maxOutputTokens: number },
+  cfg: Config,
+  opts: ScreenOptions,
+  deps: ScreenDeps,
+  indexPath: string,
+): Promise<void> {
+  const inherited = readInheritedSummaries(indexPath, opts);
+
+  // §2.4.1: representativeSourceSec が一致する旧区間から引き継ぐ(VLM を呼ばない)
+  const candidates: ScreenSegmentOut[] = [];
+  for (const seg of index.segments) {
+    const prior = inherited.get(seg.representativeSourceSec);
+    if (prior) {
+      seg.summary = prior;
+      continue;
+    }
+    candidates.push(seg);
+  }
+  if (candidates.length === 0) return;
+
+  // §2.7: maxSegments 超過時は長い区間を優先し、切った件数を stdout に出す
+  const { selected, droppedCount } = selectSummarizeTargets(candidates, summarizeCfg.maxSegments);
+  if (droppedCount > 0) {
+    console.log(
+      `screen --summarize: 上限 ${summarizeCfg.maxSegments} 区間のため ${droppedCount} 区間を要約対象から除外しました(長い区間を優先)`,
+    );
+  }
+  if (selected.length === 0) return;
+
+  // §2.5: vision route 未設定 / AI 全体が未設定 → 警告のうえ決定論のまま exit 0
+  // (0 回呼び出し。resolveAiRuntimeConfig を直接見て、completeAi を1回も
+  // 呼ばずに判定する。source==="unconfigured" は AI 鍵が無い場合も含む)
+  const runtime = resolveAiRuntimeConfig(cfg);
+  if (!runtime.routes.vision || runtime.source === "unconfigured") {
+    const msg = "screen --summarize: ai.routes.vision が未設定のため VLM を実行していません(summary は null のまま)";
+    console.warn(`警告: ${msg}`);
+    index.warnings.push(msg);
+    return;
+  }
+
+  console.log(`screen --summarize: ${selected.length} 区間へ VLM を呼びます`);
+  const completeAiFn = deps.completeAi ?? completeAiDefault;
+  const schema = { name: SCREEN_SUMMARY_SCHEMA_NAME, strict: true as const, schema: screenSummaryResponseSchema() };
+
+  let summarized = 0;
+  let discarded = 0;
+  for (const seg of selected) {
+    if (!seg.still) {
+      // effectiveStills により通常は必ず埋まっているはずだが、念のための防波堤
+      index.warnings.push(`区間 ${seg.id} の要約をスキップしました(still がありません)`);
+      continue;
+    }
+    const imagePath = join(dir, SCREEN_DIR, seg.still);
+    const ocrLines = seg.ocr?.lines ?? [];
+    const prompt = buildScreenSummaryPrompt(ocrLines);
+    try {
+      const response = await completeAiFn(
+        {
+          route: "vision",
+          purpose: "vision-review",
+          parts: [
+            { type: "text", text: prompt },
+            { type: "image", file: imagePath, mediaType: "image/png", label: seg.id },
+          ],
+          output: { kind: "json-schema", format: schema },
+          maxOutputTokens: summarizeCfg.maxOutputTokens,
+        },
+        cfg,
+      );
+      const parsed = parseScreenSummaryResponse(response.text);
+      const check = checkSummaryText(parsed.text);
+      if (!check.ok) {
+        index.warnings.push(`区間 ${seg.id} の要約を破棄しました(${check.rule})`);
+        discarded++;
+        continue;
+      }
+      seg.summary = {
+        text: parsed.text,
+        confidence: parsed.confidence,
+        provenance: {
+          profile: response.profile,
+          adapter: response.adapter,
+          model: response.model,
+          observedAt: new Date().toISOString(),
+        },
+      };
+      summarized++;
+    } catch (error) {
+      // capability 不足(structuredOutput=none / imageInput=false)は1区間目で
+      // 捕捉して以降を打ち切る(§2.5・T10)。それ以外は個別失敗として続行する
+      if (error instanceof AiProviderError && error.code === "capability") {
+        const msg = `screen --summarize: ${error.message}。以降の区間の要約を打ち切ります(決定論のみ)`;
+        console.warn(`警告: ${msg}`);
+        index.warnings.push(msg);
+        break;
+      }
+      index.warnings.push(`区間 ${seg.id} の要約に失敗しました: ${(error as Error).message}`);
+    }
+  }
+  console.log(`screen --summarize: 完了(${summarized} 区間を要約 / ${discarded} 区間を後段検証で破棄)`);
 }
 
 /** stdout 用の1行要約(formatAvSummary と同じ形。probe が使う) */

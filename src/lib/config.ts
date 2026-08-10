@@ -834,6 +834,16 @@ export interface Config {
     minSegmentSec?: number;
     /** index.json に載せる OCR 行数(全行は Layer 1 の ocr/*.json) */
     indexLines?: number;
+    /** `screen --summarize`(video-perception-P4。区間へ VLM 1 行要約を付ける。
+     * 既定オフ=このキーは `--summarize` を使わない限り一切読まれない)の
+     * コスト制御。省略可(全キー省略時は DEFAULT_SCREEN_SUMMARIZE_*) */
+    summarize?: {
+      /** 1回の --summarize で VLM に送る上限区間数。超過分は長い区間を優先し、
+       * 切った件数を stdout に出す(P4 §2.7) */
+      maxSegments?: number;
+      /** 1回の VLM 呼び出しの出力トークン上限。1行40字なので既定は小さい */
+      maxOutputTokens?: number;
+    };
   };
   /** `record --watch`(D1。カーソル座標の取得)。省略可(古い config.yaml との
    * 互換。使わない限り読まれず既存挙動は不変)。撮影は OBS を維持したまま、
@@ -1748,6 +1758,9 @@ export const DEFAULT_SCREEN_MERGE_THRESHOLD = 0.6;
 export const DEFAULT_SCREEN_SCENE_THRESHOLD = 0.25;
 export const DEFAULT_SCREEN_MIN_SEGMENT_SEC = 10.0;
 export const DEFAULT_SCREEN_INDEX_LINES = 8;
+/** video-perception-P4 §2.7。`--summarize` を使わない限り読まれない */
+export const DEFAULT_SCREEN_SUMMARIZE_MAX_SEGMENTS = 40;
+export const DEFAULT_SCREEN_SUMMARIZE_MAX_OUTPUT_TOKENS = 64;
 
 /** screen を既定値で解決する純関数。loadConfig は cfg.screen を書き換えない
  * (省略時は上の DEFAULT_SCREEN_* がそのまま使われる) */
@@ -1760,8 +1773,10 @@ export function resolveScreenCfg(cfg: Config): {
   sceneThreshold: number;
   minSegmentSec: number;
   indexLines: number;
+  summarize: { maxSegments: number; maxOutputTokens: number };
 } {
   const s = cfg.screen ?? {};
+  const summarize = s.summarize ?? {};
   return {
     maxSamples: s.maxSamples ?? DEFAULT_SCREEN_MAX_SAMPLES,
     minGapSec: s.minGapSec ?? DEFAULT_SCREEN_MIN_GAP_SEC,
@@ -1771,6 +1786,10 @@ export function resolveScreenCfg(cfg: Config): {
     sceneThreshold: s.sceneThreshold ?? DEFAULT_SCREEN_SCENE_THRESHOLD,
     minSegmentSec: s.minSegmentSec ?? DEFAULT_SCREEN_MIN_SEGMENT_SEC,
     indexLines: s.indexLines ?? DEFAULT_SCREEN_INDEX_LINES,
+    summarize: {
+      maxSegments: summarize.maxSegments ?? DEFAULT_SCREEN_SUMMARIZE_MAX_SEGMENTS,
+      maxOutputTokens: summarize.maxOutputTokens ?? DEFAULT_SCREEN_SUMMARIZE_MAX_OUTPUT_TOKENS,
+    },
   };
 }
 

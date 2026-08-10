@@ -1648,11 +1648,20 @@ program
   )
   .option("--stills", "区間代表の PNG も screen.probe/stills/ に残す")
   .option("--json", "index.json を標準出力へ出す")
-  .option("--force", "Layer1/Layer2 のキャッシュを無視して全再計算する")
-  .action(async (dir: string, opts: { stills?: boolean; json?: boolean; force?: boolean }) => {
+  .option("--force", "Layer1/Layer2 のキャッシュを無視して全再計算する(--summarize と併用時は summary も引き継がず全再生成)")
+  .option(
+    "--summarize",
+    "区間代表 still 1枚 + OCR 先頭数行を vision route へ送り、1行の日本語要約を付ける" +
+      "(video-perception-P4。唯一の外部通信。--stills を暗黙に含意する。vision route 未設定なら警告のうえ決定論のまま終了)",
+  )
+  .action(async (dir: string, opts: { stills?: boolean; json?: boolean; force?: boolean; summarize?: boolean }) => {
     const cfg = loadConfig(program.opts().config);
     const abs = resolveDir(dir);
-    const index = await screen(abs, { stills: opts.stills === true, force: opts.force === true }, cfg);
+    const index = await screen(
+      abs,
+      { stills: opts.stills === true, force: opts.force === true, summarize: opts.summarize === true },
+      cfg,
+    );
     if (opts.json === true) {
       console.log(JSON.stringify(index, null, 2));
       return;
