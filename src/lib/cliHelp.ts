@@ -69,7 +69,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "probe", summary: "素材・A/V・画面の知覚をまとめて実行" },
       { name: "record", summary: "収録に連動してカーソル座標を記録(macOS)" },
       { name: "index", summary: "収録横断のローカル検索インデックスを更新" },
-      { name: "search", summary: "収録・素材・OCR・文字起こしをローカル検索" },
+      { name: "search", summary: "収録・素材・画面OCR・文字起こしをローカル検索" },
       { name: "review", summary: "before/after のレビュー束を生成" },
     ],
   },

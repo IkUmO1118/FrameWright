@@ -661,6 +661,39 @@ node src/cli.ts probe <dir> --all       # materials → av → screen をまと�
 `frames` は人間/AI が目で見る枚数、`screen` は機械が畳む材料で較正の目標が
 違うため、独立に動かせる必要がある。
 
+### 索引への視覚投入(index / search、video-perception-P2)
+
+`node src/cli.ts index` は `screen.probe/index.json` があれば読み、**区間
+1件 = 文書1件**として索引へ入れる(`kind: "screen"`)。他の入力ファイル
+(`meta.json` / `chapters.json` / `transcript.json` /
+`materials.probe/index.json`)と同じ差分更新で、`screen.probe/index.json`
+の mtime が変わればその収録の文書だけが再構築される。`screen.probe/` が
+無い収録は従来どおり `screen` 文書 0 件で、例外は投げない。
+
+文書の `title` はこの優先順で最初に非空のものを採る: ① 区間の
+`summary.text`(video-perception-P4 が埋めていれば) ② `ocr.lines[0]`
+(正規化前の生テキスト) ③ `"画面 " + segment.id`(P4 未実行かつ OCR も
+空のとき)。`text` は `ocr.lines`(先頭 `indexLines` 件。index.json が
+既に絞ったもの)を空白区切りで連結したもの(全 OCR 行は索引へ入れない)。
+
+**文書 id の由来**(索引の差分更新を壊さないための核心):
+`suffix` には区間 id(`scr-NNN`)ではなく **`segment.representativeSourceSec`
+(代表サンプルの元収録秒)**を使う。`scr-NNN` は区間の畳み直し(閾値変更・
+`--force` 再計算)のたびに指す場面が変わりうる不安定な番号なので、これを
+文書 id に使うと同じ場面でも毎回別文書として入れ替わってしまう。代表の
+元収録秒は畳み直されても同じ場面なら不変なので、これを使うことで
+「区間が畳み直されても同じ場面は同じ文書 id を保つ」が成り立つ。
+
+```sh
+node src/cli.ts index
+node src/cli.ts search "<画面に映っていた文字列>" --kind screen --json
+```
+
+`search` の `--kind` は `recording | material | caption | screen` の4種
+(`screen` は画面 OCR 専用。過去収録の画面に映っていたエラーメッセージ・
+コマンド・ファイル名を横断検索できる)。返る `sourceRange` は**元収録の秒**
+なので、そのまま `frames <dir> --t <startSec> --full-res` へ渡せる。
+
 ## カーソル座標の取得(record --watch)
 
 `node src/cli.ts record --watch` は、OBS の録画ボタンに自動連動してカーソル座標を

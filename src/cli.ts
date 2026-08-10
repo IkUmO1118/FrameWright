@@ -1753,21 +1753,21 @@ program
 program
   .command("search <query>")
   .description("recording/material metadata、OCR、transcriptをローカル検索する")
-  .option("--kind <kind>", "recording | material | caption")
+  .option("--kind <kind>", "recording | material | caption | screen")
   .option("--scope <scope>", "current | other | all", "all")
   .option("--limit <n>", "最大件数", "10")
   .option("--json", "JSONをstdoutへ出す")
   .action((query: string, opts: { kind?: string; scope?: string; limit?: string; json?: boolean }) => {
     const cfg = loadConfig(program.opts().config);
-    if (opts.kind && !["recording", "material", "caption"].includes(opts.kind)) {
-      throw new Error("--kind は recording | material | caption です");
+    if (opts.kind && !["recording", "material", "caption", "screen"].includes(opts.kind)) {
+      throw new Error("--kind は recording | material | caption | screen です");
     }
     if (opts.scope && !["current", "other", "all"].includes(opts.scope)) {
       throw new Error("--scope は current | other | all です");
     }
     const results = retrievalSearch(cfg.recordingsDir, {
       query,
-      kind: opts.kind as "recording" | "material" | "caption" | undefined,
+      kind: opts.kind as "recording" | "material" | "caption" | "screen" | undefined,
       scope: opts.scope as "current" | "other" | "all" | undefined,
       limit: Number(opts.limit),
     });

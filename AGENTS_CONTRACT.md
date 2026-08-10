@@ -439,8 +439,8 @@ without `--force`; with `--force`, hand-edited files are moved to
 | `style-profile` | Extract a deterministic style profile (cut pace, caption density/position, loudness, structure, and — for `own-project` inputs with `plan.raw.txt` — an AI-proposal-vs-human-final correction delta) from one or more `--from <path>` inputs (a recording folder with `manifest.json`+`cutplan.json`, or a bare video file/folder), and write it to `style.probe/<name>.json` under the channel directory (the parent of the first `--from` path). Takes no `<dir>` positional argument. Never writes editable files |
 | `style-check <dir>` | Measure how far the recording's current edit (candidate) deviates from a learned style profile's variance bands (cut pace via the profile's shot-length [p10,p90] band, caption coverage/density/position, loudness/silence), and report deviations as warn/info — always exit 0. Requires `style-profile --from <dir>` first; a two-tier band widened by each section's confidence keeps a cold-start (N=1) profile from over-warning. Scoped to cut/caption/audio (profile v1). Writes `style-check.json`; never writes editable files |
 | `review <dir>` | Generate a deterministic before/after review bundle and write `review.probe/index.json` |
-| `index` | Build the local cross-recording retrieval index |
-| `search <query>` | Search recording/material metadata, OCR, and transcripts locally |
+| `index` | Build the local cross-recording retrieval index. Inputs: `meta.json`, `chapters.json`, `transcript.json`, `materials.probe/index.json`, and (video-perception-P2) `screen.probe/index.json` — one document per screen segment (`kind: "screen"`) |
+| `search <query>` | Search recording/material metadata, OCR, transcripts, and (video-perception-P2) on-screen text locally. `--kind` accepts `recording \| material \| caption \| screen` |
 | `approve <dir>` | Approve the cutplan into `approvals.json` (interactive; requires `--yes` non-interactively) |
 | `unapprove <dir>` | Revoke an approval record |
 | `render <dir>` | Final render; requires a valid cutplan approval record |

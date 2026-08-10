@@ -15,12 +15,19 @@ import {
   type RetrievalDocumentKind,
   type RetrievalIndex,
 } from "../lib/retrieval.ts";
+import { SCREEN_DIR_NAME, SCREEN_INDEX_FILE_NAME } from "../lib/screenIndex.ts";
+
+/** screen.probe/index.json への相対パス。screenIndex.ts の定数から組み立てる
+ *  (src/stages/screen.ts は import しない=ffmpeg/Apple Vision を引き込まない。
+ *  video-perception-P2 §2.1) */
+const SCREEN_INDEX_RELATIVE_PATH = `${SCREEN_DIR_NAME}/${SCREEN_INDEX_FILE_NAME}`;
 
 const INPUTS = [
   "meta.json",
   "chapters.json",
   "transcript.json",
   "materials.probe/index.json",
+  SCREEN_INDEX_RELATIVE_PATH,
 ] as const;
 
 export function retrievalIndexPath(recordingsDir: string): string {
@@ -108,7 +115,45 @@ function documentsForRecording(
       if (transcript) add(out, recording, "material-transcript", title, transcript, file || undefined, undefined, fingerprint, `${index}:transcript`);
     }
   });
+  readJson(dir, SCREEN_INDEX_RELATIVE_PATH, warnings, (value) => {
+    for (const [index, segment] of arrayAt(value, "segments").entries()) {
+      const repSec = segment.representativeSourceSec;
+      if (typeof repSec !== "number" || !Number.isFinite(repSec)) {
+        warnings.push(`${recording}/${SCREEN_INDEX_RELATIVE_PATH}: segment ${index} に representativeSourceSec がありません`);
+        continue;
+      }
+      const id = typeof segment.id === "string" ? segment.id : String(index);
+      const ocrLines = screenOcrLines(segment);
+      const summaryText = screenSummaryText(segment);
+      // video-perception-P2 §2.3.1: summary → OCR 先頭行 → "画面 <id>" の優先順
+      const title = summaryText || ocrLines[0] || `画面 ${id}`;
+      add(out, recording, "screen", title, ocrLines.join(" "), SCREEN_INDEX_RELATIVE_PATH,
+        screenSourceRange(segment), fingerprint, String(repSec));
+    }
+  });
   return out;
+}
+
+/** segment.ocr.lines(先頭 indexLines 件・正規化前の生テキスト)。ocr が null なら [] */
+function screenOcrLines(segment: Record<string, unknown>): string[] {
+  const ocr = segment.ocr;
+  if (!ocr || typeof ocr !== "object") return [];
+  const lines = (ocr as Record<string, unknown>).lines;
+  return Array.isArray(lines) ? lines.filter((l): l is string => typeof l === "string") : [];
+}
+
+/** segment.summary?.text(P4 が埋める。P1 のみでは常に summary: null なので undefined) */
+function screenSummaryText(segment: Record<string, unknown>): string | undefined {
+  const summary = segment.summary;
+  if (!summary || typeof summary !== "object") return undefined;
+  const text = (summary as Record<string, unknown>).text;
+  return typeof text === "string" && text ? text : undefined;
+}
+
+function screenSourceRange(segment: Record<string, unknown>): { startSec: number; endSec: number } | undefined {
+  const start = segment.sourceSec;
+  const end = segment.endSourceSec;
+  return typeof start === "number" && typeof end === "number" ? { startSec: start, endSec: end } : undefined;
 }
 
 function add(

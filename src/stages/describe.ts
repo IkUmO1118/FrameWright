@@ -170,11 +170,17 @@ function screenSegmentsIn(
   for (const raw of screenIndex.segments) {
     const seg = raw as {
       sourceSec?: unknown; endSourceSec?: unknown; lenSec?: unknown;
-      summary?: unknown; ocr?: { lines?: unknown } | null;
+      summary?: { text?: unknown } | null; ocr?: { lines?: unknown } | null;
     };
     if (typeof seg.sourceSec !== "number" || typeof seg.endSourceSec !== "number") continue;
     if (!(seg.sourceSec < end && start < seg.endSourceSec)) continue;
-    const summary = typeof seg.summary === "string" && seg.summary.trim() ? seg.summary.trim() : null;
+    // summary は P4 が入れる `{ text, confidence, provenance }`(P4 設計書 §2.4)。
+    // P1 単体では常に null なので、その場合は代表 OCR の先頭1行へ落ちる
+    const summaryText =
+      seg.summary && typeof seg.summary === "object" && typeof seg.summary.text === "string"
+        ? seg.summary.text.trim()
+        : "";
+    const summary = summaryText.length > 0 ? summaryText : null;
     const firstLine =
       seg.ocr && Array.isArray(seg.ocr.lines) && typeof seg.ocr.lines[0] === "string"
         ? (seg.ocr.lines[0] as string).trim()
