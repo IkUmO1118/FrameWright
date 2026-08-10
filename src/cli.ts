@@ -71,6 +71,7 @@ import { formatMaterialsSummary, materials } from "./stages/materials.ts";
 import { formatMaterialFitReport, materialFit } from "./stages/materialFit.ts";
 import { effectCheck, formatEffectCheckReport } from "./stages/effectCheck.ts";
 import { av, formatAvSummary } from "./stages/av.ts";
+import { formatScreenSummary, screen } from "./stages/screen.ts";
 import { bgmFit, formatBgmFitReport } from "./stages/bgmFit.ts";
 import { styleProfile, formatStyleProfileReport } from "./stages/styleProfile.ts";
 import { styleCheck, formatStyleCheckReport } from "./stages/styleCheck.ts";
@@ -572,13 +573,17 @@ program
 
 program
   .command("probe <dir>")
-  .description("知覚層をまとめて実行する(materials.probe/ と av.probe/。--style は明示時のみ)")
+  .description("知覚層をまとめて実行する(materials.probe/ と av.probe/ と screen.probe/。--style は明示時のみ)")
   .option("--materials", "素材(B-roll)を知覚する")
   .option("--av", "keep 後タイムラインの motion/sound を知覚する")
+  .option("--screen", "本編画面の状態トラックを作る(要 av の事前実行。--all 内では自動的に av の後)")
   .option("--style", "style-profile --from <dir> を実行する(--all には含まれない)")
-  .option("--all", "materials + av を実行する(--style は含めない)")
+  .option("--all", "materials + av + screen を実行する(--style は含めない)")
   .option("--deep", "materials で frames/OCR/transcribe まで実行する")
-  .action(async (dir: string, opts: { materials?: boolean; av?: boolean; style?: boolean; all?: boolean; deep?: boolean }) => {
+  .action(async (
+    dir: string,
+    opts: { materials?: boolean; av?: boolean; screen?: boolean; style?: boolean; all?: boolean; deep?: boolean },
+  ) => {
     const cfg = loadConfig(program.opts().config);
     const abs = resolveDir(dir);
     const ran = await runProbe(abs, cfg, { ...opts, onLine: (line) => console.log(line) });
@@ -1633,6 +1638,26 @@ program
       soundOnly: opts.soundOnly === true,
     }, cfg);
     for (const line of formatAvSummary(result)) console.log(line);
+  });
+
+program
+  .command("screen <dir>")
+  .description(
+    "画面状態の区間トラックを作る知覚コマンド(要 av <dir> の事前実行)。" +
+      "keep 後タイムラインの OCR を区間へ畳み、screen.probe/index.json を書く",
+  )
+  .option("--stills", "区間代表の PNG も screen.probe/stills/ に残す")
+  .option("--json", "index.json を標準出力へ出す")
+  .option("--force", "Layer1/Layer2 のキャッシュを無視して全再計算する")
+  .action(async (dir: string, opts: { stills?: boolean; json?: boolean; force?: boolean }) => {
+    const cfg = loadConfig(program.opts().config);
+    const abs = resolveDir(dir);
+    const index = await screen(abs, { stills: opts.stills === true, force: opts.force === true }, cfg);
+    if (opts.json === true) {
+      console.log(JSON.stringify(index, null, 2));
+      return;
+    }
+    for (const line of formatScreenSummary(index)) console.log(line);
   });
 
 program

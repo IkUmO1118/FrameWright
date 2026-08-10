@@ -77,6 +77,7 @@
 | `frames-serve <dir>` | **JSON 微調整ループ(編集 → `frames --t …` → 確認 → …)を何度も回すとき**。bundle+headless Chrome を暖めたまま待ち受ける opt-in の常駐デーモン。起動していなければ `frames` は従来どおりの単発実行(挙動・出力は不変) |
 | `materials <dir>` | **素材(B-roll)の中身を知りたい**とき(尺・解像度・fps・音声有無・`overlays.json`/`bgm.json` との参照クロスリンク・未使用/dangling 検出)。既定は ffprobe だけ。`--frames`/`--ocr`/`--transcribe`/`--all` で見た目・画面文字・音声発話まで opt-in で取得 |
 | `av <dir>` | **keep 後タイムラインの動きと音を知りたい**とき。`av.probe/motion.json` / `sound.json` / `motion.strip.png` に motion(scene score・freeze・フィルムストリップ)と sound(LUFS 包絡・無音・mic/system 被り・BGM/duck 設定)を出す。`--range`(出力秒)/ `--every` / `--full-res` / `--motion-only` / `--sound-only` |
+| `screen <dir>` | **画面が「いつ何を映していたか」を区間で知りたい**とき(`frames --ocr` の「点」に対する「区間」)。要 `av <dir>` 事前実行。scene score 駆動でサンプル時刻を選び、各時刻の画面 OCR を「OCR 行 Jaccard < 閾値 **かつ** scene score >= 閾値」の2条件 AND で区間へ畳んで `screen.probe/index.json` に書く。`--stills` / `--json` / `--force`。キャッシュは2層で、OCR 結果は cutplan 非依存(カットを編集し直しても増分だけ)。編集ファイルには一切書かない |
 | `record --watch` | **カーソル座標を収録と一緒に記録したい**とき(`autozoom` / `plan-effects` のカーソル dwell アンカーの元データ)。録画ボタンに連動して `<収録ファイル名>.cursor.json` を収録ファイルの隣に書く常駐 watcher。macOS 専用・ingest より前に走る |
 | `index` / `search <query>` | **収録をまたいで探したい**とき。`index` が `recordingsDir` のローカル検索インデックスを更新し、`search` が収録・素材の metadata / OCR / 文字起こしを横断検索する(収録フォルダ引数を取らない)。`recordingsDirs` 設定時も検索対象は primary root のみで、複数 root 横断はランチャーだけが対応する |
 | `review <dir>` | **before/after の差分を人間がレビューできる形で束ねたい**とき。決定論のレビュー束を `review.probe/index.json` に書く |

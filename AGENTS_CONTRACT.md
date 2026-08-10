@@ -166,6 +166,16 @@ false staleness signals or gets silently discarded:
 - `av.probe/` — a **cache-style** generated directory written by `av <dir>`
   (`motion.json`, `sound.json`, `motion.strip.png`). It is not wiped on each
   run; deleting the whole directory forces a full regeneration
+- `screen.probe/` — a **cache-style** generated directory written by
+  `screen <dir>` (video-perception-P1). Two layers: `index.json` is the screen
+  **segment track** (cutplan-dependent — its cache key embeds
+  `av.probe/motion.json`'s key, which contains `keepsHash`), while
+  `ocr/<sourceSec>.json` holds per-source-second OCR results and is
+  **cutplan-independent** (content-addressed by the source file's mtime+size,
+  `screenRegion` and OCR languages), so re-editing cuts only re-OCRs the newly
+  sampled seconds. `stills/<segId>.png` is written only with `--stills`.
+  Like `materials.probe/` and `av.probe/` it is **not** wiped on each run;
+  unreferenced `ocr/*.json` files are mark-and-swept after a successful write
 - `render.design/` — a cache-style generated directory holding the base-layout
   design background (`config.yaml` `render.design.backgroundFile`) copied into
   the recording folder, which is served as the local `publicDir`. Written for both
@@ -387,7 +397,7 @@ without `--force`; with `--force`, hand-edited files are moved to
 | `detect <dir>` | Detect silence to produce cut candidates (`cuts.auto.json`) |
 | `plan <dir>` | Generate cut decisions, chapters, and title drafts with an LLM (§9: do not re-run casually) |
 | `remeta <dir>` | Regenerate chapters/titles/description only, leaving `cutplan.json` untouched |
-| `probe <dir>` | Consolidated perception command. With no flags or `--all`, runs materials + A/V perception and writes only `materials.probe/` and `av.probe/`; `--style` is explicit-only and writes the channel-level `style.probe/<name>.json`. `--deep` makes the materials leg run frames/OCR/transcribe. Never writes editable files or approvals. |
+| `probe <dir>` | Consolidated perception command. With no flags or `--all`, runs materials + A/V + screen perception (in that order — `screen` requires `av.probe/motion.json`) and writes `materials.probe/`, `av.probe/` and `screen.probe/`; `--style` is explicit-only and writes the channel-level `style.probe/<name>.json`. `--deep` makes the materials leg run frames/OCR/transcribe. Never writes editable files or approvals. |
 | `draft <dir>` | Consolidated draft command for non-cut edit files. With no flags or `--all`, runs material placement, effect placement, and BGM placement; `--zoom` is explicit-only and mutually exclusive with `--effects`. Writes `overlays.json` / `bgm.json` only, and asserts at runtime that `cutplan.json` and `approvals.json` are unchanged. |
 | `check <dir>` | Consolidated inspection command. With no flags or `--all`, runs materials/effects/BGM/style/boundary checks; read-only mode auto-runs safe perception prerequisites but does not run `id-stamp`, and asserts editable files + approvals are unchanged. `--fix` first runs `id-stamp`, then applies safe `material-fit.suggested.json`, `effect-fix.suggested.json`, and `bgm-fit.suggested.json` patches via `apply`; any cutplan-targeting patch is rejected. `--dry-run` is valid only with `--fix`; `--json` emits the run summary to stdout. |
 | `plan-materials <dir>` | Draft material (B-roll) placements into `overlays.json`'s `overlays[]` (number-selection only; requires `materials <dir> --all` first) |
@@ -424,6 +434,7 @@ without `--force`; with `--force`, hand-edited files are moved to
 | `material-fit <dir>` | Detect material duration-fit issues (overrun/underrun) and dangling/unused references; write an `apply`-ready patch draft (`material-fit.suggested.json`); requires `materials <dir>` first and `@id`s on overlays/inserts |
 | `effect-check <dir>` | Verify zoom/blur/annotation effects: deterministic zoom-interaction (E4) and density (E5) checks always run; deterministic caption/material overlap checks and optional VLM secondary review (E3) inspect composited stills reused from the `frames` path. Writes `effect-check.json` and, when there are deterministic corrections, an `apply`-ready patch draft (`effect-fix.suggested.json`). `--no-vlm` skips the VLM lane; it also auto-skips gracefully when no vision route is configured. Never writes editable files |
 | `av <dir>` | Probe kept motion/sound feedback and write `av.probe/` reports |
+| `screen <dir>` | Build the screen-state **segment track** (`screen.probe/index.json`) by sampling scene-driven times from `av.probe/motion.json`, OCR-ing the full-resolution `screenRegion` crop at each, and folding adjacent samples into segments (OCR-line Jaccard AND scene-score, both required). Requires `av <dir>` first; deterministic only (no LLM). `--stills` also writes segment representative PNGs, `--json` prints the index, `--force` ignores both cache layers. Never writes editable files |
 | `bgm-fit <dir>` | Detect BGM speech-overlap/silence-float/loud/no-fade issues from `av.probe/sound.json` and propose `volumeDb`/`fadeOutSec` corrections as an `apply`-ready patch draft (`bgm-fit.suggested.json`); also detects a monotone single-track/root-`bgm.*` fallback when multiple chapters exist and points to `plan-bgm`. Requires `av <dir>` first; deterministic only (no LLM). Never writes editable files |
 | `style-profile` | Extract a deterministic style profile (cut pace, caption density/position, loudness, structure, and — for `own-project` inputs with `plan.raw.txt` — an AI-proposal-vs-human-final correction delta) from one or more `--from <path>` inputs (a recording folder with `manifest.json`+`cutplan.json`, or a bare video file/folder), and write it to `style.probe/<name>.json` under the channel directory (the parent of the first `--from` path). Takes no `<dir>` positional argument. Never writes editable files |
 | `style-check <dir>` | Measure how far the recording's current edit (candidate) deviates from a learned style profile's variance bands (cut pace via the profile's shot-length [p10,p90] band, caption coverage/density/position, loudness/silence), and report deviations as warn/info — always exit 0. Requires `style-profile --from <dir>` first; a two-tier band widened by each section's confidence keeps a cold-start (N=1) profile from over-warning. Scoped to cut/caption/audio (profile v1). Writes `style-check.json`; never writes editable files |

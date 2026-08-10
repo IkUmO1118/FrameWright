@@ -76,6 +76,13 @@ const GENERATED_NAME_PATTERNS: readonly RegExp[] = [
  * materials.probe/(`materials <dir>` が書く素材知覚の集約+キャッシュ。frames/ と違い実行のたびに
  * 全消しはされない差分更新型。`materials/` 自体(人間の素材置き場)とは
  * 別名の生成ディレクトリなので "other" にはならない)・
+ * screen.probe/(`screen <dir>` が書く画面状態の区間トラック+キャッシュ
+ * (video-perception-P1)。`index.json`(区間トラック。cutplan 依存。
+ * av.probe/motion.json の keepsHash 込み key で陳腐化判定)+
+ * `ocr/<sourceSec>.json`(元収録秒ごとの OCR 結果。cutplan 非依存の内容
+ * アドレス式キャッシュ)+ `stills/<segId>.png`(`--stills` 時のみの区間代表
+ * still)。**`frames/` と違い実行のたびの全消しはしない差分更新型キャッシュ**
+ * (materials.probe/ av.probe/ と同じ。索引 §2.1))・
  * style.probe/(`style-profile` が channel 直下に書くスタイルプロファイル
  * 集約。生成物)・hyperframe.probe/(`hyperframe-check` が書く動的監査
  * レポート+still の集約。materials.probe/ 等と同じ差分更新型キャッシュ。
@@ -104,6 +111,7 @@ const GENERATED_DIRS: readonly string[] = [
   "render.design",
   "materials.probe",
   "av.probe",
+  "screen.probe",
   "review.probe",
   "style.probe",
   "hyperframe.probe",

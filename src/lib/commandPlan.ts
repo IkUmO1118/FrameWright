@@ -1,10 +1,11 @@
-export type ProbeStep = "materials" | "av" | "style";
+export type ProbeStep = "materials" | "av" | "screen" | "style";
 export type DraftStep = "materials" | "effects" | "bgm" | "zoom";
 export type CheckStep = "materials" | "effects" | "bgm" | "style" | "boundary";
 
 export interface ProbePlanOptions {
   materials?: boolean;
   av?: boolean;
+  screen?: boolean;
   style?: boolean;
   all?: boolean;
 }
@@ -39,11 +40,12 @@ function anySelected(values: readonly (boolean | undefined)[]): boolean {
 }
 
 export function resolveProbePlan(opts: ProbePlanOptions): ProbeStep[] {
-  const selected = anySelected([opts.materials, opts.av, opts.style, opts.all]);
+  const selected = anySelected([opts.materials, opts.av, opts.screen, opts.style, opts.all]);
   const all = opts.all === true || !selected;
   const steps: ProbeStep[] = [];
   if (all || opts.materials === true) steps.push("materials");
   if (all || opts.av === true) steps.push("av");
+  if (all || opts.screen === true) steps.push("screen");
   if (opts.style === true) steps.push("style");
   return steps;
 }

@@ -17,6 +17,7 @@ import { fmtT } from "../lib/fmt.ts";
 import { isImageFile } from "../lib/overlayFade.ts";
 import { resolveStillsCfg } from "../lib/config.ts";
 import { framesFreshness } from "../lib/framesIndex.ts";
+import { screenFreshness } from "../lib/screenIndex.ts";
 import { ID_PREFIX, ID_RE } from "../lib/ids.ts";
 import { collectIdOccurrences } from "../lib/mention.ts";
 import { CUT_REASON_IDS, REASON_ID_FAMILY } from "../lib/reasonIds.ts";
@@ -129,7 +130,29 @@ export function validate(dir: string, cfg?: Config): ValidateResult {
   // errors の有無に関わらず判定できる(承認鮮度チェックと違い docs の形に
   // 依存しない)
   checkFramesFreshness(dir, result.warnings);
+  // screen.probe/index.json の古さ(video-perception-P1 §2.7)。cutplan の
+  // 形が壊れていると keepsHash が計算できないので errors があるときは飛ばす
+  if (result.errors.length === 0) checkScreenFreshness(dir, docs, result.warnings);
   return result;
+}
+
+/**
+ * screen.probe/index.json が現在の cutplan より古ければ警告する
+ * (video-perception-P1 §2.7)。`outSec` の**読み出し時再計算はしない**方針の
+ * 裏返しで、古さは警告で知らせる。未実行(`screen.probe/` 不在)は警告しない
+ * (frames/index.json の古さ警告と同じ非強制の姿勢。exit 0)
+ */
+function checkScreenFreshness(dir: string, docs: LoadedDocs, warnings: Problem[]): void {
+  const cutplan = docs.cutplan as CutPlan | null;
+  if (!cutplan || !Array.isArray(cutplan.segments)) return;
+  if (screenFreshness(dir, cutplan).state !== "stale") return;
+  warnings.push({
+    file: "screen.probe/index.json",
+    where: "-",
+    message:
+      "screen.probe/index.json は現在の編集より古い可能性があります" +
+      `(cutplan 変更後に \`${cliCmd()} av <dir>\` と \`${cliCmd()} screen <dir>\` を実行し直してください)`,
+  });
 }
 
 /**

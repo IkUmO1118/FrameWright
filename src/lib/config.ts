@@ -577,6 +577,12 @@ export interface Config {
     pauseMax?: number;
     /** これ以上の長さの間だけ出す(秒)。省略時 DEFAULT_DESCRIBE_PAUSE_MIN_SEC(0.6) */
     pauseMinSec?: number;
+    /** 画面状態の区間(`screen.probe/index.json`)を describe の**散文**へ
+     *  `[画面]` 行として出す。省略時 false(散文はバイト等価。fs にも触らない)。
+     *  `describe --json` の `screen` キーはこの設定と無関係で、
+     *  `screen.probe/index.json` が在れば常に出る(不在なら省略)。
+     *  §docs/plans/2026-08-10-video-perception-p1-screen-probe-design.md §2.7 */
+    screen?: boolean;
   };
   preview: {
     width: number;
@@ -804,6 +810,30 @@ export interface Config {
       durationSec?: number;
     };
     stripWidthPx?: number;
+  };
+  /** `screen <dir>`(画面状態の区間トラック。要 av <dir> の事前実行)の閾値。
+   * 省略可(古い config.yaml との互換。全キー省略可・既定値は
+   * src/stages/screen.ts の DEFAULT_SCREEN_*)。`frames.scenes` とは別キー
+   * (同じ selectSceneTimes を呼ぶが較正の目標が違うため独立に動かせる)。
+   * video-perception-P1 §2.6 */
+  screen?: {
+    /** OCR にかけるサンプル数の上限(= selectSceneTimes の maxShots) */
+    maxSamples?: number;
+    /** selectSceneTimes へ渡す間引き間隔(秒) */
+    minGapSec?: number;
+    /** selectSceneTimes へ渡す(静止区間の代表を取る間隔) */
+    frozenShotEverySec?: number;
+    /** selectSceneTimes へ渡す(1つの静止区間から取る最大枚数) */
+    frozenMaxShotsPerSpan?: number;
+    /** 隣接サンプルの OCR 行 Jaccard 係数がこれ以上なら同一画面とみなす */
+    mergeThreshold?: number;
+    /** 境界の追認に使う scene score */
+    sceneThreshold?: number;
+    /** これ未満の区間は前へ吸収する。av.everySec 以下にすると吸収が機能しない
+     * (実行時に警告する。エラーにはしない) */
+    minSegmentSec?: number;
+    /** index.json に載せる OCR 行数(全行は Layer 1 の ocr/*.json) */
+    indexLines?: number;
   };
   /** `record --watch`(D1。カーソル座標の取得)。省略可(古い config.yaml との
    * 互換。使わない限り読まれず既存挙動は不変)。撮影は OBS を維持したまま、
@@ -1706,6 +1736,41 @@ export function resolveAvCfg(cfg: Config): {
       durationSec: av.freeze?.durationSec ?? DEFAULT_AV_FREEZE_DURATION_SEC,
     },
     stripWidthPx: av.stripWidthPx ?? DEFAULT_AV_STRIP_WIDTH_PX,
+  };
+}
+
+/** screen.* 未指定時の既定値。video-perception-P1 §2.6 */
+export const DEFAULT_SCREEN_MAX_SAMPLES = 120;
+export const DEFAULT_SCREEN_MIN_GAP_SEC = 6.0;
+export const DEFAULT_SCREEN_FROZEN_SHOT_EVERY_SEC = 60;
+export const DEFAULT_SCREEN_FROZEN_MAX_SHOTS_PER_SPAN = 3;
+export const DEFAULT_SCREEN_MERGE_THRESHOLD = 0.6;
+export const DEFAULT_SCREEN_SCENE_THRESHOLD = 0.25;
+export const DEFAULT_SCREEN_MIN_SEGMENT_SEC = 10.0;
+export const DEFAULT_SCREEN_INDEX_LINES = 8;
+
+/** screen を既定値で解決する純関数。loadConfig は cfg.screen を書き換えない
+ * (省略時は上の DEFAULT_SCREEN_* がそのまま使われる) */
+export function resolveScreenCfg(cfg: Config): {
+  maxSamples: number;
+  minGapSec: number;
+  frozenShotEverySec: number;
+  frozenMaxShotsPerSpan: number;
+  mergeThreshold: number;
+  sceneThreshold: number;
+  minSegmentSec: number;
+  indexLines: number;
+} {
+  const s = cfg.screen ?? {};
+  return {
+    maxSamples: s.maxSamples ?? DEFAULT_SCREEN_MAX_SAMPLES,
+    minGapSec: s.minGapSec ?? DEFAULT_SCREEN_MIN_GAP_SEC,
+    frozenShotEverySec: s.frozenShotEverySec ?? DEFAULT_SCREEN_FROZEN_SHOT_EVERY_SEC,
+    frozenMaxShotsPerSpan: s.frozenMaxShotsPerSpan ?? DEFAULT_SCREEN_FROZEN_MAX_SHOTS_PER_SPAN,
+    mergeThreshold: s.mergeThreshold ?? DEFAULT_SCREEN_MERGE_THRESHOLD,
+    sceneThreshold: s.sceneThreshold ?? DEFAULT_SCREEN_SCENE_THRESHOLD,
+    minSegmentSec: s.minSegmentSec ?? DEFAULT_SCREEN_MIN_SEGMENT_SEC,
+    indexLines: s.indexLines ?? DEFAULT_SCREEN_INDEX_LINES,
   };
 }
 

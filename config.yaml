@@ -334,6 +334,29 @@ record:
 #     durationSec: 1
 #   stripWidthPx: 320
 
+# 画面状態の区間トラック(screen コマンド)。要 av <dir> の事前実行。省略可・
+# 全キー省略可(既定値はコード側の DEFAULT_SCREEN_*。src/lib/config.ts)。
+# frames.scenes とは別キー(同じ selectSceneTimes を呼ぶが較正の目標が違うため
+# 独立に動かせる。video-perception-P1 §2.6)
+# screen:
+#   # OCR にかけるサンプル数の上限(= selectSceneTimes の maxShots)
+#   maxSamples: 120
+#   # selectSceneTimes へ渡す間引き間隔(秒)
+#   minGapSec: 6.0
+#   # 静止区間にこの秒ごとに1枚
+#   frozenShotEverySec: 60
+#   # 1つの静止区間から取る最大枚数
+#   frozenMaxShotsPerSpan: 3
+#   # 隣接サンプルの OCR 行 Jaccard 係数がこれ以上なら同一画面とみなす
+#   mergeThreshold: 0.6
+#   # 境界の追認に使う scene score
+#   sceneThreshold: 0.25
+#   # これ未満の区間は前へ吸収する。av.everySec 以下にすると吸収が機能しない
+#   # (実行時に警告する。エラーにはしない)
+#   minSegmentSec: 10.0
+#   # index.json に載せる OCR 行数(全行は Layer 1 の ocr/*.json)
+#   indexLines: 8
+
 # GUI エディタ(npm run editor)
 editor:
   # 素材アップロード1ファイルの上限(MB)。動画素材も置けるよう大きめ。
@@ -417,6 +440,9 @@ plan:
   #   pauses: false      # keep 内の間の位置と長さを出す
   #   pauseMax: 3
   #   pauseMinSec: 0.6
+  #   screen: false      # 画面区間(screen.probe/index.json)を散文へ [画面] 行で出す
+  #                      # (--json の screen キーはこの設定と無関係で、
+  #                      #  screen.probe/index.json が在れば常に出る)
 
   # カーソル dwell(停留)からズーム候補を作る(plan-effects。OpenScreen移植D2)。
   # <recording base>.cursor.json サイドカー(record --watch)が無ければ一切

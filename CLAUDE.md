@@ -124,6 +124,14 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
   `motion.json` / `sound.json` / `motion.strip.png`。`materials.probe/` と
   同じく実行のたびの全消しはしない差分更新型で、同じ入力 key なら前回結果を
   再利用する) /
+  `screen.probe/`(`screen <dir>` が書く**画面状態の区間トラック**+キャッシュ。
+  `index.json`(区間トラック。**cutplan 依存**=キーに `av.probe/motion.json` の
+  key(`keepsHash` 込み)を持つ)/ `ocr/<元収録秒>.json`(元収録秒ごとの OCR
+  結果。**cutplan 非依存**=元収録ファイルの mtime+size・`screenRegion`・
+  OCR 言語だけをキーにする内容アドレス式キャッシュ。だからカットを編集し直しても
+  新しくサンプルされた秒だけ OCR すれば済む)/ `stills/<segId>.png`(`--stills`
+  時のみ)。`materials.probe/` `av.probe/` と同じく実行のたびの全消しはしない
+  差分更新型。書き込み成功後に未参照の `ocr/*.json` を掃除する) /
   `timeline.probe/`(GUI エディタが書くタイムライン用の差分更新型キャッシュ。
   `waveform.json` + `waveform/*.bin`、`thumbstrip.json` + `thumbstrip/*.webp` / `*.jpg`。
   編集データではなく、削除しても次回エディタ表示で再生成される) /
@@ -391,6 +399,28 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
     `--motion-only` / `--sound-only` で片側だけにもできる
   - `av.probe/` は `materials.probe/` と同じ差分更新型キャッシュ。keep 集合・
     range・設定が同じなら ffmpeg を再実行せず前回 JSON を再利用する
+- `node src/cli.ts screen <dir>` … **画面が「いつ何を映していたか」を時間の
+  区間として知る**知覚コマンド(本母艦の本丸。`frames --ocr` が時刻の**点**を
+  返すのに対し、こちらは**区間**を返す)。要 `av <dir>` の事前実行
+  (`av.probe/motion.json` が無ければ告知して exit 1)。
+  `av.probe/motion.json` の scene score から**変化点に密・静止に疎な**サンプル
+  時刻を選び(`frames --scenes` と同じ `selectSceneTimes`)、各時刻で元収録の
+  フル解像度 `screenRegion` を OCR し、**隣接サンプルの OCR 行 Jaccard 係数が
+  閾値未満 かつ scene score が閾値以上**(2条件 AND)のところだけを境界にして
+  区間へ畳む。出力は `screen.probe/index.json`。
+  - **AND が必須**: OCR だけだとカーソル点滅・時計・プログレスバーで境界が
+    乱発し、scene score だけだとスクロールで乱発する
+  - `--stills` で区間代表 PNG も残す / `--json` で index.json を stdout へ /
+    `--force` で2層キャッシュを両方無視して全再計算
+  - **キャッシュは2層**。OCR 結果(`ocr/<元収録秒>.json`)は cutplan 非依存
+    なので、**カットを編集し直しても新しくサンプルされた秒だけ OCR すれば済む**
+  - `describe <dir> --json` は `screen.probe/index.json` があれば `screen`
+    キーで区間を**そのまま**出す(再計算しない)。散文へ `[画面]` 行を出すのは
+    `config.yaml` の `describe.screen: true` のときだけ(既定オフ=バイト等価)
+  - cutplan を編集したまま撮り直していないと `validate` が「`screen.probe/`
+    が古い」と警告する(exit 0)
+  - **OCR 非対応環境(macOS 以外)でも区間トラックは成立する**(scene score
+    だけで境界を決め、`ocr` が null の区間になる)
 - `node src/cli.ts bgm-fit <dir>` … **既存の `bgm.json` の音量/duck/フェードを
   実測から補正する**コマンド(`plan-bgm` が BGM を**作る**側、こちらは**直す**側)。
   要 `av <dir>` の事前実行(`av.probe/sound.json` が無ければ告知して exit 1)。
@@ -545,6 +575,7 @@ node src/cli.ts material-fit <dir>  # 素材の尺整合・dangling/unused を�
 node src/cli.ts effect-check <dir>  # 演出(zoom/blur/annotation)を検品する(決定論+任意VLM。effect-check.json / effect-fix.suggested.json)
 node src/cli.ts effect-check <dir> --no-vlm  # 決定論チェックのみ(vision route 未設定でも同じ結果になる)
 node src/cli.ts av <dir>  # keep後タイムラインの motion/sound を知る(av.probe/*.json + motion.strip.png)
+node src/cli.ts screen <dir>  # 要 av 事前実行。画面状態の区間トラックを作る(screen.probe/index.json。OCR行のJaccard AND sceneScore で境界判定・2層キャッシュ)
 node src/cli.ts av <dir> --range 10-25 --motion-only  # 出力10-25秒の動きだけ調べる
 node src/cli.ts bgm-fit <dir>  # 要 av <dir> 事前実行。BGM の音量/duck/フェードを実測から補正提案(bgm-fit.json / bgm-fit.suggested.json)。決定論のみ(LLM不使用)
 node src/cli.ts style-profile --from <path> [--from <path> ...] [--name <名前>]  # 任意の動画/収録からスタイルプロファイルを抽出(テンポ・字幕密度/位置・ラウドネス・構成+補正デルタ)。決定論のみ・channel直下の style.probe/<名前>.json に書く(<dir> ではなく --from 主導)

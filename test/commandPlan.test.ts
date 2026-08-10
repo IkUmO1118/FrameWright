@@ -2,14 +2,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveCheckPlan, resolveDraftPlan, resolveProbePlan } from "../src/lib/commandPlan.ts";
 
-test("resolveProbePlan: 無指定と --all は materials→av で style を含めない", () => {
-  assert.deepEqual(resolveProbePlan({}), ["materials", "av"]);
-  assert.deepEqual(resolveProbePlan({ all: true }), ["materials", "av"]);
+test("resolveProbePlan: 無指定と --all は materials→av→screen で style を含めない", () => {
+  assert.deepEqual(resolveProbePlan({}), ["materials", "av", "screen"]);
+  assert.deepEqual(resolveProbePlan({ all: true }), ["materials", "av", "screen"]);
 });
 
 test("resolveProbePlan: --style は明示指定時だけ実行する", () => {
   assert.deepEqual(resolveProbePlan({ style: true }), ["style"]);
-  assert.deepEqual(resolveProbePlan({ all: true, style: true }), ["materials", "av", "style"]);
+  assert.deepEqual(resolveProbePlan({ all: true, style: true }), ["materials", "av", "screen", "style"]);
+});
+
+test("resolveProbePlan: --screen は単独指定でも実行できる", () => {
+  assert.deepEqual(resolveProbePlan({ screen: true }), ["screen"]);
 });
 
 test("resolveDraftPlan: 無指定と --all は materials→effects→bgm で zoom を含めない", () => {

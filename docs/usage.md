@@ -597,6 +597,70 @@ node src/cli.ts frames <dir> --scenes --max-shots 30  # 上限枚数を変える
   (全キー省略可。書かない限り `--scenes` を使わない既存の `frames` 挙動は
   完全に不変)。既定値と根拠は `config.yaml` のコメントを参照。
 
+## 画面状態の区間トラック(screen)
+
+`frames --ocr` は**時刻の点**を返す(`t=90` の画面テキスト・`t=100` の画面
+テキスト)。だが AI が「90〜128 秒は同じエディタ画面を見ていて、128 秒で
+ターミナルへ切り替えた」と読むには、点ではなく**区間**が要る。
+`screen <dir>` がそれを作る。
+
+```sh
+node src/cli.ts av <dir>            # 前提(要事前実行。無ければ告知して exit 1)
+node src/cli.ts screen <dir>        # screen.probe/index.json を書く
+node src/cli.ts screen <dir> --stills   # 区間代表 PNG も残す
+node src/cli.ts screen <dir> --json     # index.json を stdout へ
+node src/cli.ts screen <dir> --force    # 2層キャッシュを両方無視して全再計算
+node src/cli.ts probe <dir> --all       # materials → av → screen をまとめて
+```
+
+**区間の作り方(決定論。LLM 不使用)**:
+
+1. `av.probe/motion.json` の scene score から、**変化点に密・静止に疎な**
+   サンプル時刻を選ぶ(`frames --scenes` と同じ `selectSceneTimes`)。
+2. 各時刻で元収録のフル解像度 `screenRegion` をクロップして OCR する。
+3. 隣接サンプルについて **「OCR 行集合の Jaccard 係数 < `mergeThreshold`」
+   かつ 「scene score >= `sceneThreshold`」** の**両方**が真のところだけを
+   境界にする。片方だけでは境界にしない
+   (OCR だけ = カーソル点滅・時計・プログレスバーで乱発、
+   scene score だけ = スクロールで乱発。**AND が必須**)。
+4. `minSegmentSec` 未満の区間は前の区間へ吸収する(先頭区間だけは次へ)。
+
+**キャッシュは2層**(これが `screen` の設計の核心):
+
+| 層 | 中身 | 依存 |
+|---|---|---|
+| Layer 1 | `screen.probe/ocr/<元収録秒>.json` | **cutplan 非依存**(元収録ファイルの mtime+size・`screenRegion`・OCR 言語だけがキー) |
+| Layer 2 | `screen.probe/index.json` の `key` | cutplan 依存(`av.probe/motion.json` の key = `keepsHash` 込みを含む) |
+
+高価なのは OCR であって畳み込みではない、という非対称を使っている。
+おかげで **cutplan を編集し直しても、新しくサンプルされた元収録秒だけ OCR
+すれば済む**(閾値だけを変えたときは OCR ゼロ)。
+`ocr/*.json` は実行のたびに全消しされず(`frames/` とはここが違う)、
+書き込み成功後に未参照のものだけが掃除される。
+
+**読む側**:
+
+- `describe <dir> --json` は `screen.probe/index.json` があれば `screen` キーで
+  区間を**そのまま**出す(**再計算しない**)。不在ならキーごと省略。
+- 散文に `[画面]` 行を出すのは `config.yaml` の `describe.screen: true` の
+  ときだけ(既定オフ=散文はバイト等価。fs にも触らない)。
+- cutplan を編集したまま `screen` を撮り直していないと `validate` が
+  「`screen.probe/index.json` は現在の編集より古い可能性があります」と
+  警告する(**exit 0**。強制しない)。`index.json` の `outSec` を読み出し時に
+  再計算することは**しない**(区間の境界が古い cutplan 由来なのに秒だけ
+  新しい、という不整合を作らないため)。
+
+**OCR 非対応環境(macOS 以外)でも区間トラックは成立する**。第 1 条件が
+常に真とみなされ scene score だけで境界が決まり、`ocrAvailable: false` /
+各区間の `ocr: null` になる(「いつ画面が変わったか」は取れる)。
+
+閾値(`maxSamples` / `minGapSec` / `frozenShotEverySec` /
+`frozenMaxShotsPerSpan` / `mergeThreshold` / `sceneThreshold` /
+`minSegmentSec` / `indexLines`)は `config.yaml` の `screen` で調整できる
+(全キー省略可)。**`frames.scenes` の設定は読まない** — 同じ関数を呼ぶが、
+`frames` は人間/AI が目で見る枚数、`screen` は機械が畳む材料で較正の目標が
+違うため、独立に動かせる必要がある。
+
 ## カーソル座標の取得(record --watch)
 
 `node src/cli.ts record --watch` は、OBS の録画ボタンに自動連動してカーソル座標を
