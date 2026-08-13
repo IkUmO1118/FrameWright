@@ -569,6 +569,188 @@ vision route 不在・still 抽出失敗・`--no-vlm` はいずれも優雅に�
 `cutplan.json` / `approvals.json` は読まない・書かない。
 
 
+## frames のシーン駆動サンプリング(--scenes)
+
+`frames <dir> --t ...` / `--captions` / `--every` に続く 4 つ目のモード。
+`node src/cli.ts av <dir>` が既に測っている `av.probe/motion.json`
+(scene score・freeze 区間)を読み、「画面が変わった瞬間」+「静止区間の
+代表」+「動画の端点」だけを自動で選んで撮る(一律間隔の `--every` と違い、
+10 秒間に何度も画面が変わる区間と 5 分間同じ画面の区間を同じ密度で撮らない)。
+
+```sh
+node src/cli.ts av <dir>              # 前提(要事前実行。無ければ告知して exit 1)
+node src/cli.ts frames <dir> --scenes            # 変化点+静止区間の代表+端点を撮る
+node src/cli.ts frames <dir> --scenes --ocr      # 画面文字も一緒に読みたいとき(主用途)
+node src/cli.ts frames <dir> --scenes --max-shots 30  # 上限枚数を変える(既定は config の frames.scenes.maxShots)
+```
+
+- `--t` / `--captions` / `--every` とは排他。`--ocr` / `--full-res` とは併用可。
+- 前提の `av.probe/motion.json` が古くても(cutplan 編集後に `av` を撮り直して
+  いなくても)警告のうえそのまま使う(`frames/index.json` の古さ警告と同じ
+  非強制の姿勢。強制すると重くなる)。`av --range` で部分測定した
+  `motion.json` を使うと、その旨(範囲が全体をカバーしていないこと)を
+  stdout に告知する。
+- 上限(`--max-shots` または `config.yaml` の `frames.scenes.maxShots`。
+  省略時 60)を超えて間引いた件数は必ず stdout に出る。
+- 閾値(`sceneThreshold` / `minGapSec` / `maxShots` / `frozenShotEverySec` /
+  `frozenMaxShotsPerSpan`)は `config.yaml` の `frames.scenes` で調整できる
+  (全キー省略可。書かない限り `--scenes` を使わない既存の `frames` 挙動は
+  完全に不変)。既定値と根拠は `config.yaml` のコメントを参照。
+
+## 画面状態の区間トラック(screen)
+
+`frames --ocr` は**時刻の点**を返す(`t=90` の画面テキスト・`t=100` の画面
+テキスト)。だが AI が「90〜128 秒は同じエディタ画面を見ていて、128 秒で
+ターミナルへ切り替えた」と読むには、点ではなく**区間**が要る。
+`screen <dir>` がそれを作る。
+
+```sh
+node src/cli.ts av <dir>            # 前提(要事前実行。無ければ告知して exit 1)
+node src/cli.ts screen <dir>        # screen.probe/index.json を書く
+node src/cli.ts screen <dir> --stills   # 区間代表 PNG も残す
+node src/cli.ts screen <dir> --json     # index.json を stdout へ
+node src/cli.ts screen <dir> --force    # 2層キャッシュを両方無視して全再計算
+node src/cli.ts probe <dir> --all       # materials → av → screen をまとめて
+```
+
+**区間の作り方(決定論。LLM 不使用)**:
+
+1. `av.probe/motion.json` の scene score から、**変化点に密・静止に疎な**
+   サンプル時刻を選ぶ(`frames --scenes` と同じ `selectSceneTimes`)。
+2. 各時刻で元収録のフル解像度 `screenRegion` をクロップして OCR する。
+3. 隣接サンプルについて **「OCR 行集合の Jaccard 係数 < `mergeThreshold`」
+   かつ 「scene score >= `sceneThreshold`」** の**両方**が真のところだけを
+   境界にする。片方だけでは境界にしない
+   (OCR だけ = カーソル点滅・時計・プログレスバーで乱発、
+   scene score だけ = スクロールで乱発。**AND が必須**)。
+4. `minSegmentSec` 未満の区間は前の区間へ吸収する(先頭区間だけは次へ)。
+
+**キャッシュは2層**(これが `screen` の設計の核心):
+
+| 層 | 中身 | 依存 |
+|---|---|---|
+| Layer 1 | `screen.probe/ocr/<元収録秒>.json` | **cutplan 非依存**(元収録ファイルの mtime+size・`screenRegion`・OCR 言語だけがキー) |
+| Layer 2 | `screen.probe/index.json` の `key` | cutplan 依存(`av.probe/motion.json` の key = `keepsHash` 込みを含む) |
+
+高価なのは OCR であって畳み込みではない、という非対称を使っている。
+おかげで **cutplan を編集し直しても、新しくサンプルされた元収録秒だけ OCR
+すれば済む**(閾値だけを変えたときは OCR ゼロ)。
+`ocr/*.json` は実行のたびに全消しされず(`frames/` とはここが違う)、
+書き込み成功後に未参照のものだけが掃除される。
+
+**読む側**:
+
+- `describe <dir> --json` は `screen.probe/index.json` があれば `screen` キーで
+  区間を**そのまま**出す(**再計算しない**)。不在ならキーごと省略。
+- 散文に `[画面]` 行を出すのは `config.yaml` の `describe.screen: true` の
+  ときだけ(既定オフ=散文はバイト等価。fs にも触らない)。
+- cutplan を編集したまま `screen` を撮り直していないと `validate` が
+  「`screen.probe/index.json` は現在の編集より古い可能性があります」と
+  警告する(**exit 0**。強制しない)。`index.json` の `outSec` を読み出し時に
+  再計算することは**しない**(区間の境界が古い cutplan 由来なのに秒だけ
+  新しい、という不整合を作らないため)。
+
+**OCR 非対応環境(macOS 以外)でも区間トラックは成立する**。第 1 条件が
+常に真とみなされ scene score だけで境界が決まり、`ocrAvailable: false` /
+各区間の `ocr: null` になる(「いつ画面が変わったか」は取れる)。
+
+閾値(`maxSamples` / `minGapSec` / `frozenShotEverySec` /
+`frozenMaxShotsPerSpan` / `mergeThreshold` / `sceneThreshold` /
+`minSegmentSec` / `indexLines`)は `config.yaml` の `screen` で調整できる
+(全キー省略可)。**`frames.scenes` の設定は読まない** — 同じ関数を呼ぶが、
+`frames` は人間/AI が目で見る枚数、`screen` は機械が畳む材料で較正の目標が
+違うため、独立に動かせる必要がある。
+
+### VLM 区間要約(screen --summarize、video-perception-P4)
+
+`screen.probe/index.json` の各区間は OCR の生テキストしか持たず、
+「画素ゲートを走らせている場面」のような読みは索引にも `describe` にも
+出てこない。`screen <dir> --summarize` は区間ごとに VLM(vision route)へ
+still 1枚を見せ、**1行の日本語要約**を付ける。**本母艦で唯一の外部通信**。
+
+```sh
+node src/cli.ts screen <dir> --summarize          # 区間へ VLM 1行要約を付ける
+node src/cli.ts screen <dir> --summarize --force  # 既存 summary も引き継がず全再生成
+```
+
+**送るもの・送らないもの**(これがこのコマンドの全て。それ以外は一切送らない):
+
+| 送る | 送らない |
+|---|---|
+| 区間代表 still 1枚(`screen.probe/stills/scr-NNN.png`) | 動画そのもの・連続フレーム |
+| その区間の OCR 先頭数行(`index.json` の `ocr.lines`。`indexLines` 既定8行) | OCR 全行・transcript・発話・編集ファイル |
+| — | 区間の開始/終了時刻(絶対時刻は送らない。座標・秒数も生成させない) |
+
+**`--summarize` は `--stills` を暗黙に含意する**(still が無ければその場で撮る)。
+
+**後段検証(この順に適用。1つでも該当したら破棄して `summary: null`)**:
+
+1. **R1(長さ)**: `[...text].length`(コードポイント数)が40を超えたら破棄
+   (`text.length` ではない。サロゲートペアを2文字と誤って数えると正当な
+   40字の要約を誤破棄する)。
+2. **R2(数値+単位)**: `/\d\s*(秒|分|時間|ms|s\b|フレーム|コマ|f\b)/u` に
+   マッチしたら破棄(単位を伴わない数値は正当。「1834件」は通るが
+   「1834フレーム」は破棄する)。
+3. **R3(前後への言及)**: `/(この(後|前|直後|直前)|次の場面|先ほど|さきほど|以降|以前)/u`
+   にマッチしたら破棄。
+
+**優雅な劣化**: `ai.routes.vision` が未設定/AI 全体が未設定なら警告のうえ
+**VLM を1回も呼ばず** `summary` は `null` のまま(既定 = `--summarize` を
+付けない限りバイト等価)。vision profile の capability 不足
+(`structuredOutput=none` / `imageInput=false`)は**1区間目で検出して
+打ち切る**(2区間目以降を呼ばない)。それ以外の呼び出し失敗・JSON パース
+失敗・後段検証(R1〜R3)抵触は**その区間だけ** `summary: null` にして
+`warnings[]` に積み、続行する。
+
+**区間が畳み直されたときの引き継ぎ**: `--force` を付けない限り、新区間の
+`representativeSourceSec` が旧 `index.json` の区間と一致すれば、`summary` を
+`provenance` ごと引き継いで VLM を呼ばない(cutplan を編集し直しても
+40区間ぶんの VLM 呼び出しが毎回発生しない)。`--force` は引き継がず全再生成する。
+
+**コスト制御**は `config.yaml` の `screen.summarize`(`maxSegments` 既定40・
+`maxOutputTokens` 既定64)。超過分は長い区間を優先し、切った件数を stdout に出す。
+
+`--summarize` を付けない限り `screen` の挙動・出力は導入前と1バイトも
+変わらない(VLM は0回呼ばれる)。`describe` / `index` / `search` は
+`summary.text` を title/1行要約の第一優先として既に読んでいるので
+(video-perception-P1/P2で実装済み)、`summary` が埋まれば自動でそちらが使われる。
+
+**画面に機密情報が映る収録では `--summarize` を使わないこと**(still 1枚と
+OCR 数行が外部の vision route へ送信される)。
+
+### 索引への視覚投入(index / search、video-perception-P2)
+
+`node src/cli.ts index` は `screen.probe/index.json` があれば読み、**区間
+1件 = 文書1件**として索引へ入れる(`kind: "screen"`)。他の入力ファイル
+(`meta.json` / `chapters.json` / `transcript.json` /
+`materials.probe/index.json`)と同じ差分更新で、`screen.probe/index.json`
+の mtime が変わればその収録の文書だけが再構築される。`screen.probe/` が
+無い収録は従来どおり `screen` 文書 0 件で、例外は投げない。
+
+文書の `title` はこの優先順で最初に非空のものを採る: ① 区間の
+`summary.text`(video-perception-P4 が埋めていれば) ② `ocr.lines[0]`
+(正規化前の生テキスト) ③ `"画面 " + segment.id`(P4 未実行かつ OCR も
+空のとき)。`text` は `ocr.lines`(先頭 `indexLines` 件。index.json が
+既に絞ったもの)を空白区切りで連結したもの(全 OCR 行は索引へ入れない)。
+
+**文書 id の由来**(索引の差分更新を壊さないための核心):
+`suffix` には区間 id(`scr-NNN`)ではなく **`segment.representativeSourceSec`
+(代表サンプルの元収録秒)**を使う。`scr-NNN` は区間の畳み直し(閾値変更・
+`--force` 再計算)のたびに指す場面が変わりうる不安定な番号なので、これを
+文書 id に使うと同じ場面でも毎回別文書として入れ替わってしまう。代表の
+元収録秒は畳み直されても同じ場面なら不変なので、これを使うことで
+「区間が畳み直されても同じ場面は同じ文書 id を保つ」が成り立つ。
+
+```sh
+node src/cli.ts index
+node src/cli.ts search "<画面に映っていた文字列>" --kind screen --json
+```
+
+`search` の `--kind` は `recording | material | caption | screen` の4種
+(`screen` は画面 OCR 専用。過去収録の画面に映っていたエラーメッセージ・
+コマンド・ファイル名を横断検索できる)。返る `sourceRange` は**元収録の秒**
+なので、そのまま `frames <dir> --t <startSec> --full-res` へ渡せる。
+
 ## カーソル座標の取得(record --watch)
 
 `node src/cli.ts record --watch` は、OBS の録画ボタンに自動連動してカーソル座標を

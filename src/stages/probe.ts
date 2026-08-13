@@ -3,6 +3,7 @@ import { resolveProbePlan } from "../lib/commandPlan.ts";
 import type { ProbePlanOptions } from "../lib/commandPlan.ts";
 import { formatMaterialsSummary, materials } from "./materials.ts";
 import { av, formatAvSummary } from "./av.ts";
+import { formatScreenSummary, screen } from "./screen.ts";
 import { styleProfile } from "./styleProfile.ts";
 
 export interface ProbeRunOptions extends ProbePlanOptions {
@@ -24,6 +25,9 @@ export async function probe(dir: string, cfg: Config, opts: ProbeRunOptions = {}
     } else if (step === "av") {
       const result = await av(dir, {}, cfg);
       for (const line of formatAvSummary(result)) onLine(line);
+    } else if (step === "screen") {
+      const result = await screen(dir, {}, cfg);
+      for (const line of formatScreenSummary(result)) onLine(line);
     } else {
       await styleProfile({ from: [dir] }, cfg);
     }

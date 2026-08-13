@@ -71,6 +71,7 @@ import { formatMaterialsSummary, materials } from "./stages/materials.ts";
 import { formatMaterialFitReport, materialFit } from "./stages/materialFit.ts";
 import { effectCheck, formatEffectCheckReport } from "./stages/effectCheck.ts";
 import { av, formatAvSummary } from "./stages/av.ts";
+import { formatScreenSummary, screen } from "./stages/screen.ts";
 import { bgmFit, formatBgmFitReport } from "./stages/bgmFit.ts";
 import { styleProfile, formatStyleProfileReport } from "./stages/styleProfile.ts";
 import { styleCheck, formatStyleCheckReport } from "./stages/styleCheck.ts";
@@ -572,13 +573,17 @@ program
 
 program
   .command("probe <dir>")
-  .description("知覚層をまとめて実行する(materials.probe/ と av.probe/。--style は明示時のみ)")
+  .description("知覚層をまとめて実行する(materials.probe/ と av.probe/ と screen.probe/。--style は明示時のみ)")
   .option("--materials", "素材(B-roll)を知覚する")
   .option("--av", "keep 後タイムラインの motion/sound を知覚する")
+  .option("--screen", "本編画面の状態トラックを作る(要 av の事前実行。--all 内では自動的に av の後)")
   .option("--style", "style-profile --from <dir> を実行する(--all には含まれない)")
-  .option("--all", "materials + av を実行する(--style は含めない)")
+  .option("--all", "materials + av + screen を実行する(--style は含めない)")
   .option("--deep", "materials で frames/OCR/transcribe まで実行する")
-  .action(async (dir: string, opts: { materials?: boolean; av?: boolean; style?: boolean; all?: boolean; deep?: boolean }) => {
+  .action(async (
+    dir: string,
+    opts: { materials?: boolean; av?: boolean; screen?: boolean; style?: boolean; all?: boolean; deep?: boolean },
+  ) => {
     const cfg = loadConfig(program.opts().config);
     const abs = resolveDir(dir);
     const ran = await runProbe(abs, cfg, { ...opts, onLine: (line) => console.log(line) });
@@ -1378,6 +1383,14 @@ program
   .option("--captions", "テロップ全件の一巡監査(各テロップの表示中間で1枚ずつ)")
   .option("--every <sec>", "カット後タイムラインを一定間隔でサンプリング(秒)")
   .option(
+    "--scenes",
+    "画面の変化点+静止区間の代表を自動選択して撮る(要 av <dir> の事前実行)",
+  )
+  .option(
+    "--max-shots <n>",
+    "--scenes の上限枚数(既定は config.yaml の frames.scenes.maxShots、省略時60)",
+  )
+  .option(
     "--ocr",
     "画面 OCR(Apple Vision)でその時刻の画面内テキストを読む(macOS専用。" +
       "非対応環境では警告のうえ PNG 出力のみ続行)",
@@ -1394,19 +1407,24 @@ program
       out?: boolean;
       captions?: boolean;
       every?: string;
+      scenes?: boolean;
+      maxShots?: string;
       ocr?: boolean;
       fullRes?: boolean;
     },
   ) => {
     const cfg = loadConfig(program.opts().config);
-    const picked = [opts.t, opts.captions, opts.every].filter(
+    const picked = [opts.t, opts.captions, opts.every, opts.scenes].filter(
       (v) => v !== undefined,
     ).length;
     if (picked !== 1) {
-      throw new Error("--t / --captions / --every のどれか1つを指定してください");
+      throw new Error("--t / --captions / --every / --scenes のどれか1つを指定してください");
     }
     if (opts.out && !opts.t) {
       throw new Error("--out は --t と一緒に使ってください");
+    }
+    if (opts.maxShots !== undefined && !opts.scenes) {
+      throw new Error("--max-shots は --scenes と一緒に使ってください");
     }
     let req: FrameRequest;
     if (opts.captions) {
@@ -1415,6 +1433,16 @@ program
       const step = parseT(opts.every);
       if (step === null) throw new Error(`間隔を解釈できません: ${opts.every}(例: 10)`);
       req = { mode: "every", stepSec: step };
+    } else if (opts.scenes) {
+      let maxShots = cfg.frames?.scenes?.maxShots ?? 60;
+      if (opts.maxShots !== undefined) {
+        const n = Number(opts.maxShots);
+        if (!Number.isFinite(n) || n <= 0) {
+          throw new Error(`--max-shots は正の整数で指定してください: ${opts.maxShots}`);
+        }
+        maxShots = Math.floor(n);
+      }
+      req = { mode: "scenes", maxShots };
     } else {
       const times = opts.t!.split(",").map((s) => {
         const t = parseT(s);
@@ -1613,6 +1641,35 @@ program
   });
 
 program
+  .command("screen <dir>")
+  .description(
+    "画面状態の区間トラックを作る知覚コマンド(要 av <dir> の事前実行)。" +
+      "keep 後タイムラインの OCR を区間へ畳み、screen.probe/index.json を書く",
+  )
+  .option("--stills", "区間代表の PNG も screen.probe/stills/ に残す")
+  .option("--json", "index.json を標準出力へ出す")
+  .option("--force", "Layer1/Layer2 のキャッシュを無視して全再計算する(--summarize と併用時は summary も引き継がず全再生成)")
+  .option(
+    "--summarize",
+    "区間代表 still 1枚 + OCR 先頭数行を vision route へ送り、1行の日本語要約を付ける" +
+      "(video-perception-P4。唯一の外部通信。--stills を暗黙に含意する。vision route 未設定なら警告のうえ決定論のまま終了)",
+  )
+  .action(async (dir: string, opts: { stills?: boolean; json?: boolean; force?: boolean; summarize?: boolean }) => {
+    const cfg = loadConfig(program.opts().config);
+    const abs = resolveDir(dir);
+    const index = await screen(
+      abs,
+      { stills: opts.stills === true, force: opts.force === true, summarize: opts.summarize === true },
+      cfg,
+    );
+    if (opts.json === true) {
+      console.log(JSON.stringify(index, null, 2));
+      return;
+    }
+    for (const line of formatScreenSummary(index)) console.log(line);
+  });
+
+program
   .command("bgm-fit <dir>")
   .description(
     "BGM の無音浮き/発話被り/大音量/フェード無しを検出し、volumeDb/fadeOutSec の" +
@@ -1705,21 +1762,21 @@ program
 program
   .command("search <query>")
   .description("recording/material metadata、OCR、transcriptをローカル検索する")
-  .option("--kind <kind>", "recording | material | caption")
+  .option("--kind <kind>", "recording | material | caption | screen")
   .option("--scope <scope>", "current | other | all", "all")
   .option("--limit <n>", "最大件数", "10")
   .option("--json", "JSONをstdoutへ出す")
   .action((query: string, opts: { kind?: string; scope?: string; limit?: string; json?: boolean }) => {
     const cfg = loadConfig(program.opts().config);
-    if (opts.kind && !["recording", "material", "caption"].includes(opts.kind)) {
-      throw new Error("--kind は recording | material | caption です");
+    if (opts.kind && !["recording", "material", "caption", "screen"].includes(opts.kind)) {
+      throw new Error("--kind は recording | material | caption | screen です");
     }
     if (opts.scope && !["current", "other", "all"].includes(opts.scope)) {
       throw new Error("--scope は current | other | all です");
     }
     const results = retrievalSearch(cfg.recordingsDir, {
       query,
-      kind: opts.kind as "recording" | "material" | "caption" | undefined,
+      kind: opts.kind as "recording" | "material" | "caption" | "screen" | undefined,
       scope: opts.scope as "current" | "other" | "all" | undefined,
       limit: Number(opts.limit),
     });

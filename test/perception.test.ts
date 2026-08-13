@@ -9,17 +9,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   computeAudioFeatures,
+  computeCursorFeatures,
   computeSystemSpeech,
   formatAudio,
+  formatCursor,
   formatOcr,
   pausesWithinKeeps,
   renderPerceptionBlock,
   representativeSourceTime,
   selectOcrTargets,
 } from "../src/lib/perception.ts";
-import type { SegmentOcr } from "../src/lib/perception.ts";
+import type { PerceptionCursorOptions, SegmentCursorFeature, SegmentOcr } from "../src/lib/perception.ts";
+import { detectDwellCandidates } from "../src/lib/cursorAnchors.ts";
+import type { CursorDwellSample } from "../src/lib/cursorAnchors.ts";
 import { renderPrompt } from "../src/stages/plan.ts";
 import type { NumberedSegment } from "../src/stages/plan.ts";
+import type { CursorSample } from "../src/stages/record.ts";
 import type { Interval } from "../src/types.ts";
 
 /* ---------------- computeAudioFeatures ---------------- */
@@ -211,6 +216,254 @@ test("formatOcr: text が空の区間は行に出ない(全区間空なら本文
   assert.doesNotMatch(text, /#1 画面:/);
   assert.match(text, /#2 画面: "hello"/);
   assert.match(text, /記載のない区間は画面テキストなし/);
+});
+
+/* ---------------- computeCursorFeatures / formatCursor(video-perception-P3) ---------------- */
+
+const CURSOR_CFG: PerceptionCursorOptions = {
+  minDwellMs: 600,
+  moveThreshold: 0.02,
+  waitTypes: ["wait", "busybutclickable"],
+};
+
+/** テスト用 CursorSample を作る(未指定フィールドは無害な既定値) */
+function mkSample(t: number, overrides: Partial<CursorSample> = {}): CursorSample {
+  return {
+    recTimeMs: t,
+    cx: 0.5,
+    cy: 0.5,
+    inBounds: true,
+    cursorType: null,
+    assetId: null,
+    leftButtonDown: false,
+    leftButtonPressed: false,
+    leftButtonReleased: false,
+    ...overrides,
+  };
+}
+
+const twoSegs: NumberedSegment[] = [
+  { id: 1, start: 0, end: 10, text: "" },
+  { id: 2, start: 10, end: 20, text: "" },
+];
+
+test("computeCursorFeatures T5: 帰属は左閉右開(seg.end ちょうどの秒は次の区間へ・二重計上なし)", () => {
+  // t=10000ms(sec10)は seg1[0,10) には入らず seg2[10,20) にだけ入る
+  const samples = [mkSample(10000, { cx: 0.5, cy: 0.5 })];
+  const result = computeCursorFeatures(twoSegs, samples, CURSOR_CFG);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, 2);
+});
+
+test("computeCursorFeatures T6: inBounds:false のサンプルは全指標から除外される", () => {
+  const seg: NumberedSegment[] = [{ id: 1, start: 0, end: 10, text: "" }];
+  const samples = [
+    mkSample(1000, { inBounds: false, cx: 0.9, cy: 0.9, leftButtonPressed: true, cursorType: "wait" }),
+    mkSample(2000, { inBounds: true, cx: 0.1, cy: 0.1, leftButtonPressed: false, cursorType: null }),
+  ];
+  const result = computeCursorFeatures(seg, samples, CURSOR_CFG);
+  assert.equal(result.length, 1);
+  // inBounds:false の click/waitType は数えられない。有効サンプルは1件のみ
+  assert.equal(result[0].clicks, 0);
+  assert.equal(result[0].idleRatio, 1); // 有効サンプルは1件だけ(0除算回避のケース)
+  assert.equal(result[0].waitRatio, 0);
+});
+
+test("computeCursorFeatures T7: 属するサンプルが0件の区間は結果に含まれない", () => {
+  // seg2 に属するサンプルが1件も無い
+  const samples = [mkSample(1000, { cx: 0.5, cy: 0.5 })]; // seg1[0,10) だけに属する
+  const result = computeCursorFeatures(twoSegs, samples, CURSOR_CFG);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, 1);
+});
+
+test("computeCursorFeatures T8: clicks は leftButtonPressed を数える(leftButtonDown連続は数えない)", () => {
+  const seg: NumberedSegment[] = [{ id: 1, start: 0, end: 100, text: "" }];
+  const samples: CursorSample[] = [];
+  for (let i = 0; i < 30; i++) {
+    samples.push(
+      mkSample(i * 100, {
+        cx: 0.5,
+        cy: 0.5,
+        leftButtonDown: true, // 30件連続で押されている最中
+        leftButtonPressed: i === 0, // 押した瞬間は先頭の1件だけ
+      }),
+    );
+  }
+  const result = computeCursorFeatures(seg, samples, CURSOR_CFG);
+  assert.equal(result[0].clicks, 1);
+});
+
+test("computeCursorFeatures T9/T11: maxDwellMs は Number.MAX_SAFE_INTEGER(既定2600msに切られない)。dwellMaxSec=max(strength)/1000", () => {
+  // 10秒の静止(0.1,0.1固定)。既定の DEFAULT_MAX_DWELL_MS(2600ms)なら
+  // maxDwellMs超過で候補から除外されるはずだが、知覚では除外しない
+  const seg: NumberedSegment[] = [{ id: 1, start: 0, end: 30, text: "" }];
+  const samples: CursorSample[] = [];
+  for (let t = 0; t <= 10000; t += 200) {
+    samples.push(mkSample(t, { cx: 0.1, cy: 0.1 }));
+  }
+  const result = computeCursorFeatures(seg, samples, CURSOR_CFG);
+  assert.equal(result[0].dwellCount, 1);
+  assert.equal(result[0].dwellMaxSec, 10.0);
+});
+
+test("computeCursorFeatures T10: spacingMs は0(plan.cursorの値を渡した場合よりdwellCountが多い=間引き無効化の実証)", () => {
+  const seg: NumberedSegment[] = [{ id: 1, start: 0, end: 30, text: "" }];
+  const samples: CursorSample[] = [
+    // run1: 0-800ms(0.1,0.1)。strength(duration)=800
+    ...[0, 100, 200, 300, 400, 500, 600, 700, 800].map((t) => mkSample(t, { cx: 0.1, cy: 0.1 })),
+    // jump(単独点。duration0なので候補にならない)
+    mkSample(900, { cx: 0.9, cy: 0.9 }),
+    // run2: 1000-1700ms(0.1,0.1)。strength=700。run1中心(400)から950ms
+    ...[1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700].map((t) => mkSample(t, { cx: 0.1, cy: 0.1 })),
+    // jump
+    mkSample(1800, { cx: 0.9, cy: 0.9 }),
+    // run3: 1900-2650ms(0.1,0.1)。strength=750。run1中心(400)から1875ms(>=1800)
+    ...[1900, 2000, 2100, 2200, 2300, 2400, 2500, 2600, 2650].map((t) => mkSample(t, { cx: 0.1, cy: 0.1 })),
+  ];
+
+  const result = computeCursorFeatures(seg, samples, CURSOR_CFG);
+  assert.equal(result[0].dwellCount, 3); // spacingMs:0 なので3件とも採用される
+
+  // plan.cursor 相当の間引き値(maxDwellMs:8000 / spacingMs:1800)を渡すと、
+  // run2(中心1350ms)が run1(中心400ms)・run3(中心2275ms)の両方から
+  // spacingMs(1800ms)未満のため間引かれ、2件しか残らない
+  const dwellCfg: CursorDwellSample[] = samples.map((s) => ({
+    recTimeMs: s.recTimeMs,
+    cx: s.cx,
+    cy: s.cy,
+    inBounds: s.inBounds,
+    leftButtonPressed: s.leftButtonPressed,
+  }));
+  const thinned = detectDwellCandidates(dwellCfg, {
+    minDwellMs: 600,
+    maxDwellMs: 8000,
+    moveThreshold: 0.02,
+    spacingMs: 1800,
+    clickBoost: 1,
+    windowMs: 0,
+  });
+  assert.equal(thinned.length, 2);
+  assert.ok(result[0].dwellCount > thinned.length, "間引き無効化により dwellCount が多い");
+});
+
+test("computeCursorFeatures T12: サンプル1件だけの区間は idleRatio=1(0除算しない)", () => {
+  const seg: NumberedSegment[] = [{ id: 1, start: 0, end: 100, text: "" }];
+  const samples = [mkSample(1000, { cx: 0.5, cy: 0.5 })];
+  const result = computeCursorFeatures(seg, samples, CURSOR_CFG);
+  assert.equal(result[0].idleRatio, 1);
+});
+
+test("computeCursorFeatures T13: idleRatio の隣接ペアは区間内だけで作られる(区間をまたがない)", () => {
+  // seg1[0,10): (0.1,0.1)を3点(idleペア2件)。seg2[10,20): 境界直後に
+  // 大きくジャンプした点(0.9,0.9)から始まり、その後は(0.9,0.9)で静止する3点。
+  // 区間をまたいでペアを作ると seg2 の1ペア目が「移動」として誤計上され
+  // idleRatio が 1 を下回ってしまう(2/3≈0.67)。正しくは区間内だけでペアを
+  // 作るので seg2 も idleRatio=1 になる
+  const samples = [
+    mkSample(7000, { cx: 0.1, cy: 0.1 }),
+    mkSample(8000, { cx: 0.1, cy: 0.1 }),
+    mkSample(9000, { cx: 0.1, cy: 0.1 }),
+    mkSample(10000, { cx: 0.9, cy: 0.9 }), // seg2 側(左閉右開)
+    mkSample(11000, { cx: 0.9, cy: 0.9 }),
+    mkSample(12000, { cx: 0.9, cy: 0.9 }),
+  ];
+  const result = computeCursorFeatures(twoSegs, samples, CURSOR_CFG);
+  const seg1 = result.find((r) => r.id === 1);
+  const seg2 = result.find((r) => r.id === 2);
+  assert.equal(seg1?.idleRatio, 1);
+  assert.equal(seg2?.idleRatio, 1);
+});
+
+test("computeCursorFeatures T14: cursorType:null は waitTypes に一致しない", () => {
+  const seg: NumberedSegment[] = [{ id: 1, start: 0, end: 10, text: "" }];
+  const samples = [
+    mkSample(1000, { cursorType: null }),
+    mkSample(2000, { cursorType: null }),
+  ];
+  // waitTypes に "null" という文字列を含めても、実際の値(JS の null)には一致しない
+  const result = computeCursorFeatures(seg, samples, { ...CURSOR_CFG, waitTypes: ["null", "wait"] });
+  assert.equal(result[0].waitRatio, 0);
+});
+
+test("computeCursorFeatures T15: waitTypes の比較は完全一致(\"wait\"は\"waiting\"に一致しない)", () => {
+  const seg: NumberedSegment[] = [{ id: 1, start: 0, end: 10, text: "" }];
+  const samples = [
+    mkSample(1000, { cursorType: "waiting" }),
+    mkSample(2000, { cursorType: "wait" }),
+  ];
+  const result = computeCursorFeatures(seg, samples, { ...CURSOR_CFG, waitTypes: ["wait"] });
+  assert.equal(result[0].waitRatio, 0.5); // "wait" の1件だけが一致
+});
+
+test("computeCursorFeatures T16: idleRatio/waitRatioは0〜1に収まり小数第2位へ丸められる", () => {
+  const seg: NumberedSegment[] = [{ id: 1, start: 0, end: 10, text: "" }];
+  const samples = [
+    mkSample(0, { cx: 0.1, cy: 0.1, cursorType: "wait" }),
+    mkSample(1000, { cx: 0.1, cy: 0.1, cursorType: "wait" }),
+    mkSample(2000, { cx: 0.1, cy: 0.1, cursorType: "wait" }), // idle pair (0-1)(1-2)
+    mkSample(3000, { cx: 0.1, cy: 0.1, cursorType: null }), // idle pair (2-3) → 3 idle pairs
+    mkSample(4000, { cx: 0.9, cy: 0.9, cursorType: null }), // moved (3-4)
+    mkSample(5000, { cx: 0.2, cy: 0.9, cursorType: null }), // moved (4-5)
+    mkSample(6000, { cx: 0.9, cy: 0.2, cursorType: null }), // moved (5-6)
+    mkSample(7000, { cx: 0.3, cy: 0.3, cursorType: null }), // moved (6-7) → 4 moved pairs, 7 pairs total
+  ];
+  const result = computeCursorFeatures(seg, samples, { ...CURSOR_CFG, waitTypes: ["wait"] });
+  assert.equal(result[0].idleRatio, 0.43); // 3/7 = 0.428571... → 0.43
+  assert.equal(result[0].waitRatio, 0.38); // 3/8 = 0.375 → 0.38
+  assert.ok(result[0].idleRatio >= 0 && result[0].idleRatio <= 1);
+  assert.ok(result[0].waitRatio >= 0 && result[0].waitRatio <= 1);
+});
+
+test("formatCursor: 見出し・行書式・末尾注記を含む", () => {
+  const cursor: SegmentCursorFeature[] = [
+    { id: 3, clicks: 4, dwellCount: 2, dwellMaxSec: 2.1, idleRatio: 0.38, waitRatio: 0 },
+    { id: 7, clicks: 0, dwellCount: 1, dwellMaxSec: 5.4, idleRatio: 0.91, waitRatio: 0.68 },
+  ];
+  const text = formatCursor(cursor);
+  assert.match(text, /^## 各区間のカーソル操作/);
+  assert.match(text, /#3 クリック4 \/ 停留2\(最長2\.1秒\) \/ 静止38% \/ 待機カーソル0%/);
+  assert.match(text, /#7 クリック0 \/ 停留1\(最長5\.4秒\) \/ 静止91% \/ 待機カーソル68%/);
+  assert.match(text, /記載のない区間はカーソル情報なし/);
+});
+
+/* ---------------- renderPerceptionBlock + cursor(video-perception-P3 §2.1) ---------------- */
+
+test("renderPerceptionBlock T1: 4引数(cursor=null)は3引数呼び出しとバイト等価(最重要)", () => {
+  const audio = computeAudioFeatures(numbered, []);
+  const ocr: SegmentOcr[] = [{ id: 1, lines: ["git commit"], text: "git commit" }];
+  const with3 = renderPerceptionBlock(audio, null, ocr);
+  const with4Null = renderPerceptionBlock(audio, null, ocr, null);
+  assert.equal(with4Null, with3);
+});
+
+test("renderPerceptionBlock T2: 全ブロック null(cursor含む)→ 空文字", () => {
+  assert.equal(renderPerceptionBlock(null, null, null, null), "");
+  assert.equal(renderPerceptionBlock(null, null, null, []), "");
+});
+
+test("renderPerceptionBlock T3: cursor だけ非null → 前後改行を伴う1ブロック", () => {
+  const seg: NumberedSegment[] = [{ id: 1, start: 0, end: 10, text: "" }];
+  const cursor = computeCursorFeatures(seg, [mkSample(1000, { leftButtonPressed: true })], CURSOR_CFG);
+  const block = renderPerceptionBlock(null, null, null, cursor);
+  assert.match(block, /^\n/);
+  assert.match(block, /\n$/);
+  assert.match(block, /AI 向け知覚情報/);
+  assert.match(block, /各区間のカーソル操作/);
+});
+
+test("renderPerceptionBlock T4: ブロック順は audio → system → ocr → cursor", () => {
+  const audio = computeAudioFeatures(numbered, []);
+  const system = computeSystemSpeech(numbered, [{ start: 1, end: 3, text: "デモ音" }]);
+  const ocr: SegmentOcr[] = [{ id: 1, lines: ["git commit"], text: "git commit" }];
+  const cursor = computeCursorFeatures(numbered, [mkSample(1000, { leftButtonPressed: true })], CURSOR_CFG);
+  const block = renderPerceptionBlock(audio, system, ocr, cursor);
+  const iAudio = block.indexOf("各区間の音の特徴");
+  const iSys = block.indexOf("各区間のシステム音声");
+  const iOcr = block.indexOf("各区間の画面テキスト");
+  const iCursor = block.indexOf("各区間のカーソル操作");
+  assert.ok(iAudio >= 0 && iSys >= 0 && iOcr >= 0 && iCursor >= 0);
+  assert.ok(iAudio < iSys && iSys < iOcr && iOcr < iCursor, "audio → systemSpeech → ocr → cursor の順");
 });
 
 /* ---------------- バイト等価 golden(§9 不変条件1) ---------------- */

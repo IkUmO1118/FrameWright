@@ -44,6 +44,7 @@ interface ServeRequestBody {
   times?: unknown;
   axis?: unknown;
   stepSec?: unknown;
+  maxShots?: unknown;
   ocr?: unknown;
   fullRes?: unknown;
 }
@@ -83,9 +84,19 @@ export function parseFramesServeBody(body: unknown): ParsedFramesRequest {
       throw new Error(`axis が不正です: ${JSON.stringify(b.axis)}(source/output のいずれか)`);
     }
     req = { mode: "times", times: b.times as number[], axis: b.axis === "output" ? "output" : "source" };
+  } else if (b.mode === "scenes") {
+    // video-perception-P0。FrameRequest に mode を足したらここも足さないと、
+    // frames-serve 起動中だけ frames --scenes が 400 で落ちる(委譲は
+    // フォールバックしない。framesClient.ts:78)
+    if (typeof b.maxShots !== "number" || !(b.maxShots > 0)) {
+      throw new Error(
+        `scenes モードには正の数値 maxShots が必要です: ${JSON.stringify(b.maxShots)}`,
+      );
+    }
+    req = { mode: "scenes", maxShots: b.maxShots };
   } else {
     throw new Error(
-      `mode が不正です: ${JSON.stringify(b.mode)}(times/captions/every のいずれか)`,
+      `mode が不正です: ${JSON.stringify(b.mode)}(times/captions/every/scenes のいずれか)`,
     );
   }
   const opts = {

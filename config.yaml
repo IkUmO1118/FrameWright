@@ -288,6 +288,28 @@ ocr:
 # frames:
 #   serve:
 #     port: 4311
+#
+#   # frames --scenes(画面の変化点+静止区間の代表を自動選択して撮る)の閾値。
+#   # 全キー省略可・書かない限り既定値(コード側の DEFAULT_SCENE_SAMPLING_CFG。
+#   # src/lib/sceneSampling.ts)がそのまま使われ、--scenes を使わない限り
+#   # frames の既存挙動は完全に不変(video-perception-P0 §2.4)
+#   scenes:
+#     # scdet の sceneScore がこれ以上なら変化点とみなす。
+#     # plan.cursor.scrollMotionThreshold(既定 0.4。誤爆を落とすので高め)より
+#     # 低く取る(変化を拾いたいので低め、という非対称は意図的)
+#     sceneThreshold: 0.25
+#     # 変化点をこれ未満の間隔で連続採用しない。av.everySec(既定5)より
+#     # 大きくすること(motion.json のグリッド自体が5秒間隔なので、これ以下
+#     # だと間引きが1件も発生せず設定が死ぬ)。av.everySec を変えたらここも見直す
+#     minGapSec: 6.0
+#     # 1回の --scenes で撮る上限枚数。10分の収録で --every 10 が撮る60枚と
+#     # 同数に揃えた(比較可能性のため)
+#     maxShots: 60
+#     # 静止区間にこの秒ごとに1枚(60秒未満の静止は1枚、3分以上の静止で
+#     # frozenMaxShotsPerSpan 枚が上限になる式の一部)
+#     frozenShotEverySec: 60
+#     # 1つの静止区間から取る最大枚数
+#     frozenMaxShotsPerSpan: 3
 
 # カーソル座標の取得(record --watch)。OBS の録画ボタンに自動連動する常駐
 # watcher。省略可(既定 localhost:4455・sampleIntervalMs 33)。macOS 専用
@@ -311,6 +333,36 @@ record:
 #     noiseDb: -50
 #     durationSec: 1
 #   stripWidthPx: 320
+
+# 画面状態の区間トラック(screen コマンド)。要 av <dir> の事前実行。省略可・
+# 全キー省略可(既定値はコード側の DEFAULT_SCREEN_*。src/lib/config.ts)。
+# frames.scenes とは別キー(同じ selectSceneTimes を呼ぶが較正の目標が違うため
+# 独立に動かせる。video-perception-P1 §2.6)
+# screen:
+#   # OCR にかけるサンプル数の上限(= selectSceneTimes の maxShots)
+#   maxSamples: 120
+#   # selectSceneTimes へ渡す間引き間隔(秒)
+#   minGapSec: 6.0
+#   # 静止区間にこの秒ごとに1枚
+#   frozenShotEverySec: 60
+#   # 1つの静止区間から取る最大枚数
+#   frozenMaxShotsPerSpan: 3
+#   # 隣接サンプルの OCR 行 Jaccard 係数がこれ以上なら同一画面とみなす
+#   mergeThreshold: 0.6
+#   # 境界の追認に使う scene score
+#   sceneThreshold: 0.25
+#   # これ未満の区間は前へ吸収する。av.everySec 以下にすると吸収が機能しない
+#   # (実行時に警告する。エラーにはしない)
+#   minSegmentSec: 10.0
+#   # index.json に載せる OCR 行数(全行は Layer 1 の ocr/*.json)
+#   indexLines: 8
+#   # `screen --summarize`(video-perception-P4。区間へ VLM 1 行要約を付ける)の
+#   # コスト制御。`--summarize` を使わない限り一切読まれない(既定オフ=バイト等価)
+#   summarize:
+#     # 1回の --summarize で VLM に送る上限区間数。超過分は長い区間を優先する
+#     maxSegments: 40
+#     # 1回の VLM 呼び出しの出力トークン上限(1行40字なので既定は小さい)
+#     maxOutputTokens: 64
 
 # GUI エディタ(npm run editor)
 editor:
@@ -361,6 +413,12 @@ plan:
     ocrMaxSegments: 40
     ocrMaxLines: 6
     systemSpeech: false # システム音声の発話を plan に添える(要 whisper.systemAudio)
+    cursor: false # カーソル操作(クリック/停留/待機カーソル比率)を plan に添える。
+    #   要 record --watch の cursor サイドカー(無ければ警告なしでスキップ)
+    # cursorDwell:            # 知覚用の dwell 閾値(演出用の plan.cursor とは別軸)
+    #   minDwellMs: 600
+    #   moveThreshold: 0.02
+    # cursorWaitTypes: ["wait", "busybutclickable"]   # 待機系 cursorType(完全一致)
   # plan --cuts-only の観測→再調整ループ。省略/0/1 は従来の1ショット。
   # targetOutDurationSec は単発 plan にも surface される(設定するとプロンプトに
   # 「目標の出力尺」行が1行足される。ループが無効でも読まれる)
@@ -389,6 +447,9 @@ plan:
   #   pauses: false      # keep 内の間の位置と長さを出す
   #   pauseMax: 3
   #   pauseMinSec: 0.6
+  #   screen: false      # 画面区間(screen.probe/index.json)を散文へ [画面] 行で出す
+  #                      # (--json の screen キーはこの設定と無関係で、
+  #                      #  screen.probe/index.json が在れば常に出る)
 
   # カーソル dwell(停留)からズーム候補を作る(plan-effects。OpenScreen移植D2)。
   # <recording base>.cursor.json サイドカー(record --watch)が無ければ一切

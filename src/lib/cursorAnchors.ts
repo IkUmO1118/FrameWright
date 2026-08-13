@@ -72,7 +72,10 @@ export function resolveDwellWindowMs(totalDurationMs: number, maxWindowMs = DEFA
  *  plan.cursor.clickBoost とは別軸の内部定数) */
 const CLICK_LOOKBACK_MS = 500;
 
-function distance(a: { cx: number; cy: number }, b: { cx: number; cy: number }): number {
+/** 正規化座標のユークリッド距離。plan の知覚(video-perception-P3)が
+ *  idleRatio(§2.2.5)の算出に再利用するため export する(再実装しない)。
+ *  §docs/plans/2026-08-10-video-perception-p3-cursor-perception-design.md */
+export function distance(a: { cx: number; cy: number }, b: { cx: number; cy: number }): number {
   const dx = a.cx - b.cx;
   const dy = a.cy - b.cy;
   return Math.sqrt(dx * dx + dy * dy);

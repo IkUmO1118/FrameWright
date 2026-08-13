@@ -15,6 +15,7 @@ import {
   DEFAULT_HYPERFRAME_ASSET_MAX_BYTES,
   DEFAULT_HYPERFRAME_ASSET_MAX_TOTAL_BYTES,
 } from "./hyperframeAssets.ts";
+import type { PerceptionCursorOptions } from "./perception.ts";
 
 export type AiProvider = "claude-code" | "codex" | "anthropic" | "openai";
 export type LegacyLlmBackend = "claude-cli" | "api";
@@ -276,6 +277,23 @@ export interface Config {
        *  plan の知覚ブロックに添える。省略時 false。transcript.system.json が
        *  無ければ(= whisper.systemAudio 未使用)自動で劣化=ブロック省略 */
       systemSpeech?: boolean;
+      /** カーソル操作(クリック回数・停留・待機カーソル比率)を各区間へ添える。
+       *  省略時 false(バイト等価)。`<recording base>.cursor.json` サイドカー
+       *  (record --watch。D1)が無ければ警告なしで注入をスキップする(opt-in の
+       *  収録方式なので不在は異常ではない)。
+       *  §docs/plans/2026-08-10-video-perception-p3-cursor-perception-design.md */
+      cursor?: boolean;
+      /** 知覚用の dwell 閾値。`plan.cursor`(演出用のズーム閾値)とは別軸
+       *  (演出は長い停留・密集した停留を間引くが、知覚は全 dwell を数えたい)。
+       *  省略時 DEFAULT_PERCEPTION_CURSOR_MIN_DWELL_MS(600) /
+       *  DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD(0.02) */
+      cursorDwell?: {
+        minDwellMs?: number;
+        moveThreshold?: number;
+      };
+      /** 待機系とみなす cursorType の完全一致リスト。省略時
+       *  DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES(["wait", "busybutclickable"]) */
+      cursorWaitTypes?: string[];
     };
     /** plan --cuts-only のカット判断を「生成→観測→再調整」の有限反復にする
      * opt-in 設定。省略時は maxIterations=0 と同義で、従来の1ショットと
@@ -559,6 +577,12 @@ export interface Config {
     pauseMax?: number;
     /** これ以上の長さの間だけ出す(秒)。省略時 DEFAULT_DESCRIBE_PAUSE_MIN_SEC(0.6) */
     pauseMinSec?: number;
+    /** 画面状態の区間(`screen.probe/index.json`)を describe の**散文**へ
+     *  `[画面]` 行として出す。省略時 false(散文はバイト等価。fs にも触らない)。
+     *  `describe --json` の `screen` キーはこの設定と無関係で、
+     *  `screen.probe/index.json` が在れば常に出る(不在なら省略)。
+     *  §docs/plans/2026-08-10-video-perception-p1-screen-probe-design.md §2.7 */
+    screen?: boolean;
   };
   preview: {
     width: number;
@@ -757,6 +781,24 @@ export interface Config {
        * CLI の --port が指定されていればそちらが優先 */
       port?: number;
     };
+    /** frames --scenes(画面の変化点+静止区間の代表を自動選択して撮る)の
+     * 閾値。省略可(古い config.yaml との互換。--scenes を使わない限り
+     * 読まれず既存挙動は不変)。全キー省略可・既定値は
+     * src/lib/sceneSampling.ts の DEFAULT_SCENE_SAMPLING_CFG。
+     * video-perception-P0 §2.4 */
+    scenes?: {
+      /** scdet の sceneScore がこれ以上なら変化点とみなす */
+      sceneThreshold?: number;
+      /** 変化点をこれ未満の間隔で連続採用しない(av.everySec より大きくすること) */
+      minGapSec?: number;
+      /** 1回の --scenes で撮る上限枚数。CLI の --max-shots が指定されて
+       * いればそちらが優先 */
+      maxShots?: number;
+      /** 静止区間にこの秒ごとに1枚 */
+      frozenShotEverySec?: number;
+      /** 1つの静止区間から取る最大枚数 */
+      frozenMaxShotsPerSpan?: number;
+    };
   };
   av?: {
     everySec?: number;
@@ -768,6 +810,40 @@ export interface Config {
       durationSec?: number;
     };
     stripWidthPx?: number;
+  };
+  /** `screen <dir>`(画面状態の区間トラック。要 av <dir> の事前実行)の閾値。
+   * 省略可(古い config.yaml との互換。全キー省略可・既定値は
+   * src/stages/screen.ts の DEFAULT_SCREEN_*)。`frames.scenes` とは別キー
+   * (同じ selectSceneTimes を呼ぶが較正の目標が違うため独立に動かせる)。
+   * video-perception-P1 §2.6 */
+  screen?: {
+    /** OCR にかけるサンプル数の上限(= selectSceneTimes の maxShots) */
+    maxSamples?: number;
+    /** selectSceneTimes へ渡す間引き間隔(秒) */
+    minGapSec?: number;
+    /** selectSceneTimes へ渡す(静止区間の代表を取る間隔) */
+    frozenShotEverySec?: number;
+    /** selectSceneTimes へ渡す(1つの静止区間から取る最大枚数) */
+    frozenMaxShotsPerSpan?: number;
+    /** 隣接サンプルの OCR 行 Jaccard 係数がこれ以上なら同一画面とみなす */
+    mergeThreshold?: number;
+    /** 境界の追認に使う scene score */
+    sceneThreshold?: number;
+    /** これ未満の区間は前へ吸収する。av.everySec 以下にすると吸収が機能しない
+     * (実行時に警告する。エラーにはしない) */
+    minSegmentSec?: number;
+    /** index.json に載せる OCR 行数(全行は Layer 1 の ocr/*.json) */
+    indexLines?: number;
+    /** `screen --summarize`(video-perception-P4。区間へ VLM 1 行要約を付ける。
+     * 既定オフ=このキーは `--summarize` を使わない限り一切読まれない)の
+     * コスト制御。省略可(全キー省略時は DEFAULT_SCREEN_SUMMARIZE_*) */
+    summarize?: {
+      /** 1回の --summarize で VLM に送る上限区間数。超過分は長い区間を優先し、
+       * 切った件数を stdout に出す(P4 §2.7) */
+      maxSegments?: number;
+      /** 1回の VLM 呼び出しの出力トークン上限。1行40字なので既定は小さい */
+      maxOutputTokens?: number;
+    };
   };
   /** `record --watch`(D1。カーソル座標の取得)。省略可(古い config.yaml との
    * 互換。使わない限り読まれず既存挙動は不変)。撮影は OBS を維持したまま、
@@ -830,6 +906,16 @@ export const DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS = 40;
 
 /** plan.perception.ocrMaxLines 未指定時の既定(行数) */
 export const DEFAULT_PERCEPTION_OCR_MAX_LINES = 6;
+
+/** plan.perception.cursorDwell.minDwellMs 未指定時の既定(ms)。
+ *  `plan.cursor.minDwellMs`(演出用。既定450)とは別軸なので値も独立(§2.4) */
+export const DEFAULT_PERCEPTION_CURSOR_MIN_DWELL_MS = 600;
+
+/** plan.perception.cursorDwell.moveThreshold 未指定時の既定(正規化座標) */
+export const DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD = 0.02;
+
+/** plan.perception.cursorWaitTypes 未指定時の既定(cursorType の完全一致リスト) */
+export const DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES = ["wait", "busybutclickable"];
 
 /** candidates.* 未指定時の既定値。§docs/plans/2026-07-11-c1-word-candidate-grid-design.md */
 export const DEFAULT_CANDIDATES_SPLIT_ONLY_LONGER_THAN_SEC = 6;
@@ -1142,6 +1228,8 @@ export function resolvePerceptionCfg(cfg: Config): {
   ocrMaxSegments: number;
   ocrMaxLines: number;
   systemSpeech: boolean;
+  cursor: boolean;
+  cursorOptions: PerceptionCursorOptions;
 } {
   const p = cfg.plan?.perception ?? {};
   return {
@@ -1150,6 +1238,12 @@ export function resolvePerceptionCfg(cfg: Config): {
     ocrMaxSegments: p.ocrMaxSegments ?? DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS,
     ocrMaxLines: p.ocrMaxLines ?? DEFAULT_PERCEPTION_OCR_MAX_LINES,
     systemSpeech: p.systemSpeech ?? false,
+    cursor: p.cursor ?? false,
+    cursorOptions: {
+      minDwellMs: p.cursorDwell?.minDwellMs ?? DEFAULT_PERCEPTION_CURSOR_MIN_DWELL_MS,
+      moveThreshold: p.cursorDwell?.moveThreshold ?? DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD,
+      waitTypes: p.cursorWaitTypes ?? DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES,
+    },
   };
 }
 
@@ -1158,6 +1252,7 @@ export interface PerceptionStatus {
   audio: boolean;
   ocr: boolean;
   systemSpeech: boolean;
+  cursor: boolean;
   ocrMaxSegments: number;
   ocrMaxLines: number;
   warnings: string[];
@@ -1169,10 +1264,19 @@ export function resolvePerceptionStatus(cfg: Config): PerceptionStatus {
   const warnings: string[] = [];
   if (!explicit) {
     warnings.push(
-      "plan.perception が config.yaml にありません。plan の知覚(audio/ocr/systemSpeech)は全てオフです。",
+      "plan.perception が config.yaml にありません。plan の知覚(audio/ocr/systemSpeech/cursor)は全てオフです。",
     );
   }
-  return { explicit, ...pc, warnings };
+  return {
+    explicit,
+    audio: pc.audio,
+    ocr: pc.ocr,
+    systemSpeech: pc.systemSpeech,
+    cursor: pc.cursor,
+    ocrMaxSegments: pc.ocrMaxSegments,
+    ocrMaxLines: pc.ocrMaxLines,
+    warnings,
+  };
 }
 
 export function formatPerceptionStatusLines(status: PerceptionStatus): string[] {
@@ -1184,7 +1288,8 @@ export function formatPerceptionStatusLines(status: PerceptionStatus): string[] 
           ? `on(max ${status.ocrMaxSegments} segments, ${status.ocrMaxLines} lines)`
           : "off"
       } / ` +
-      `systemSpeech=${status.systemSpeech ? "on" : "off"}`,
+      `systemSpeech=${status.systemSpeech ? "on" : "off"} / ` +
+      `cursor=${status.cursor ? "on" : "off"}`,
   ];
 }
 
@@ -1641,6 +1746,50 @@ export function resolveAvCfg(cfg: Config): {
       durationSec: av.freeze?.durationSec ?? DEFAULT_AV_FREEZE_DURATION_SEC,
     },
     stripWidthPx: av.stripWidthPx ?? DEFAULT_AV_STRIP_WIDTH_PX,
+  };
+}
+
+/** screen.* 未指定時の既定値。video-perception-P1 §2.6 */
+export const DEFAULT_SCREEN_MAX_SAMPLES = 120;
+export const DEFAULT_SCREEN_MIN_GAP_SEC = 6.0;
+export const DEFAULT_SCREEN_FROZEN_SHOT_EVERY_SEC = 60;
+export const DEFAULT_SCREEN_FROZEN_MAX_SHOTS_PER_SPAN = 3;
+export const DEFAULT_SCREEN_MERGE_THRESHOLD = 0.6;
+export const DEFAULT_SCREEN_SCENE_THRESHOLD = 0.25;
+export const DEFAULT_SCREEN_MIN_SEGMENT_SEC = 10.0;
+export const DEFAULT_SCREEN_INDEX_LINES = 8;
+/** video-perception-P4 §2.7。`--summarize` を使わない限り読まれない */
+export const DEFAULT_SCREEN_SUMMARIZE_MAX_SEGMENTS = 40;
+export const DEFAULT_SCREEN_SUMMARIZE_MAX_OUTPUT_TOKENS = 64;
+
+/** screen を既定値で解決する純関数。loadConfig は cfg.screen を書き換えない
+ * (省略時は上の DEFAULT_SCREEN_* がそのまま使われる) */
+export function resolveScreenCfg(cfg: Config): {
+  maxSamples: number;
+  minGapSec: number;
+  frozenShotEverySec: number;
+  frozenMaxShotsPerSpan: number;
+  mergeThreshold: number;
+  sceneThreshold: number;
+  minSegmentSec: number;
+  indexLines: number;
+  summarize: { maxSegments: number; maxOutputTokens: number };
+} {
+  const s = cfg.screen ?? {};
+  const summarize = s.summarize ?? {};
+  return {
+    maxSamples: s.maxSamples ?? DEFAULT_SCREEN_MAX_SAMPLES,
+    minGapSec: s.minGapSec ?? DEFAULT_SCREEN_MIN_GAP_SEC,
+    frozenShotEverySec: s.frozenShotEverySec ?? DEFAULT_SCREEN_FROZEN_SHOT_EVERY_SEC,
+    frozenMaxShotsPerSpan: s.frozenMaxShotsPerSpan ?? DEFAULT_SCREEN_FROZEN_MAX_SHOTS_PER_SPAN,
+    mergeThreshold: s.mergeThreshold ?? DEFAULT_SCREEN_MERGE_THRESHOLD,
+    sceneThreshold: s.sceneThreshold ?? DEFAULT_SCREEN_SCENE_THRESHOLD,
+    minSegmentSec: s.minSegmentSec ?? DEFAULT_SCREEN_MIN_SEGMENT_SEC,
+    indexLines: s.indexLines ?? DEFAULT_SCREEN_INDEX_LINES,
+    summarize: {
+      maxSegments: summarize.maxSegments ?? DEFAULT_SCREEN_SUMMARIZE_MAX_SEGMENTS,
+      maxOutputTokens: summarize.maxOutputTokens ?? DEFAULT_SCREEN_SUMMARIZE_MAX_OUTPUT_TOKENS,
+    },
   };
 }
 

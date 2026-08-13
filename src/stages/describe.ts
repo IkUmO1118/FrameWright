@@ -18,6 +18,8 @@ import type { FirstEffectsPlan } from "../lib/firstEffectsPlan.ts";
 import { pausesWithinKeeps } from "../lib/perception.ts";
 import type { KeepPause } from "../lib/perception.ts";
 import { framesFreshness } from "../lib/framesIndex.ts";
+import { readScreenIndex } from "../lib/screenIndex.ts";
+import type { ScreenIndexRead } from "../lib/screenIndex.ts";
 import { outputSize } from "../lib/profile.ts";
 import type { FramesShot } from "../lib/framesIndex.ts";
 import {
@@ -154,6 +156,46 @@ function keepIndexOf(
   return i >= 0 ? i : null;
 }
 
+/** describe 散文用: 画面区間のうち keep [start,end) と重なるものを、表示用の
+ *  1行ラベル付きで返す(video-perception-P1 §2.7)。ラベルは P4 の `summary` が
+ *  あればそれ、無ければ代表 OCR の先頭1行。どちらも無い区間は出さない。
+ *  screenIndex が null(既定オフ or 未実行)なら常に空配列 = 散文はバイト等価 */
+function screenSegmentsIn(
+  screenIndex: ScreenIndexRead | null,
+  start: number,
+  end: number,
+): { sourceSec: number; lenSec: number; label: string }[] {
+  if (!screenIndex) return [];
+  const out: { sourceSec: number; lenSec: number; label: string }[] = [];
+  for (const raw of screenIndex.segments) {
+    const seg = raw as {
+      sourceSec?: unknown; endSourceSec?: unknown; lenSec?: unknown;
+      summary?: { text?: unknown } | null; ocr?: { lines?: unknown } | null;
+    };
+    if (typeof seg.sourceSec !== "number" || typeof seg.endSourceSec !== "number") continue;
+    if (!(seg.sourceSec < end && start < seg.endSourceSec)) continue;
+    // summary は P4 が入れる `{ text, confidence, provenance }`(P4 設計書 §2.4)。
+    // P1 単体では常に null なので、その場合は代表 OCR の先頭1行へ落ちる
+    const summaryText =
+      seg.summary && typeof seg.summary === "object" && typeof seg.summary.text === "string"
+        ? seg.summary.text.trim()
+        : "";
+    const summary = summaryText.length > 0 ? summaryText : null;
+    const firstLine =
+      seg.ocr && Array.isArray(seg.ocr.lines) && typeof seg.ocr.lines[0] === "string"
+        ? (seg.ocr.lines[0] as string).trim()
+        : null;
+    const label = summary ?? (firstLine && firstLine.length > 0 ? firstLine : null);
+    if (label === null) continue;
+    out.push({
+      sourceSec: seg.sourceSec,
+      lenSec: typeof seg.lenSec === "number" ? seg.lenSec : seg.endSourceSec - seg.sourceSec,
+      label,
+    });
+  }
+  return out;
+}
+
 export function describe(dir: string, cfg?: Config): string {
   const inp = loadDescribeInputs(dir);
   const {
@@ -240,6 +282,9 @@ export function describe(dir: string, cfg?: Config): string {
 
   /* ---- タイムライン(カットと keep の交互。テロップ・カット理由を添える) ---- */
 
+  // 画面区間は describe.screen が真のときだけ読む(既定オフ=fs にも触らない)
+  const screenIndex = cfg?.describe?.screen === true ? readScreenIndex(dir) : null;
+
   for (let i = 0; i <= keeps.length; i++) {
     // keep[i] の手前のカット区間(収録先頭・末尾のカットも含む)
     const gapStart = i === 0 ? 0 : keeps[i - 1].end;
@@ -278,6 +323,12 @@ export function describe(dir: string, cfg?: Config): string {
           lines.push(`    ${fmtT(s.start)} [システム音声]「${quote(s.text)}」`);
         }
       }
+    }
+    // 画面状態の区間(video-perception-P1 §2.7)。cfg.describe.screen が真で
+    // screen.probe/index.json があるときだけ。無効/不在なら1行も足さない
+    // (= 既定では散文 golden とバイト等価)
+    for (const seg of screenSegmentsIn(screenIndex, k.start, k.end)) {
+      lines.push(`    ${fmtT(seg.sourceSec)} [画面]「${quote(seg.label)}」(${seg.lenSec.toFixed(1)}秒)`);
     }
     // keep 内の間(cfg.describe.pauses が真のときだけ。無効なら1行も足さない)
     for (const p of pausesByKeep.get(i) ?? []) {
@@ -382,6 +433,21 @@ export interface DescribeProjection {
    *  在るときだけ**このキーが出る(不在時は省略=既存 --json とバイト等価)。
    *  規則C(トップレベル常在)の明示的な例外=新規任意成果物は存在時のみ */
   systemAudio?: SystemAudioProjection;
+  /** 画面状態の区間トラック(`screen.probe/index.json`。video-perception-P1)。
+   *  **ファイルが在るときだけ**このキーが出る(不在時は省略=既存 --json と
+   *  バイト等価)。systemAudio と同じ「新規任意成果物は存在時のみ」の例外。
+   *  中身は index.json の segments を**そのまま**載せる(再計算しない。§2.7)。
+   *  これは編集状態ではなく**観測**なので、規則A(完全復元)の対象外 */
+  screen?: ScreenProjection;
+}
+
+export interface ScreenProjection {
+  schemaVersion: number;
+  capturedAt: string;
+  range: { startSec: number; endSec: number };
+  ocrAvailable: boolean;
+  params: Record<string, number>;
+  segments: Record<string, unknown>[];
 }
 
 export interface SystemAudioProjection {
@@ -1264,6 +1330,20 @@ function buildProjection(inp: DescribeInputs, cfg?: Config): DescribeProjection 
     bgm = fallbackFile !== undefined ? { source: "fallback", file: fallbackFile } : { source: "none" };
   }
 
+  // 画面区間(screen.probe/index.json)。ファイルが在るときだけ screen キーが
+  // 出る(不在なら省略=既存 --json とバイト等価)。index.json の segments を
+  // そのまま載せ、outSec の再計算はしない(video-perception-P1 §2.7)
+  const screenIdx = readScreenIndex(dir);
+  const screen: ScreenProjection | null = screenIdx
+    ? {
+        schemaVersion: screenIdx.schemaVersion,
+        capturedAt: screenIdx.capturedAt,
+        range: screenIdx.range,
+        ocrAvailable: screenIdx.ocrAvailable,
+        params: screenIdx.params,
+        segments: screenIdx.segments,
+      }
+    : null;
   // システム音声(transcript.system.json)。ファイルが在るときだけ systemAudio
   // キーを足す(不在時は省略=既存 --json とバイト等価。規則C の明示的例外)
   const systemAudio: SystemAudioProjection | undefined = inp.systemTranscript
@@ -1290,6 +1370,7 @@ function buildProjection(inp: DescribeInputs, cfg?: Config): DescribeProjection 
     meta: { titles: meta.titles, description: meta.description },
     bgm,
     ...(systemAudio !== undefined ? { systemAudio } : {}),
+    ...(screen !== null ? { screen } : {}),
   };
 }
 

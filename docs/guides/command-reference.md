@@ -71,13 +71,16 @@
 | コマンド | 使う場面 |
 |---|---|
 | `frames <dir> --t ... \| --captions \| --every N` | その時刻の絵を確認したいとき(テロップ位置・ワイプ被り・素材の見え方)。`frames/*.png` に出力(実行のたびに古い PNG は全消し) |
+| `frames <dir> --scenes` | **画面が変わった瞬間だけ見たいとき**(一律間隔だと変化点を取り逃す/静止区間を撮りすぎる)。要 `av <dir>` の事前実行。`av.probe/motion.json` の scene score・freeze 区間から変化点+静止区間の代表+端点を自動選択する。上限は `--max-shots`(既定は `config.yaml` の `frames.scenes.maxShots`、省略時60) |
 | `frames <dir> ... --ocr` | 画面内のコード・ターミナル・エラー文をテキストとして読みたいとき。元収録のフル解像度の画面領域を Apple Vision で OCR し `frames/out<秒>s.ocr.json` に書く。macOS 専用・オフライン。非対応環境では警告のうえ PNG 出力のみ続行 |
 | `frames <dir> ... --full-res` | 画面キャプチャ内の文字を絵として鮮明に見たいとき。ベース映像をプロキシではなく元収録のフル解像度にした**合成込み**の still を出す。`--ocr` と併用可 |
 | `frames-serve <dir>` | **JSON 微調整ループ(編集 → `frames --t …` → 確認 → …)を何度も回すとき**。bundle+headless Chrome を暖めたまま待ち受ける opt-in の常駐デーモン。起動していなければ `frames` は従来どおりの単発実行(挙動・出力は不変) |
 | `materials <dir>` | **素材(B-roll)の中身を知りたい**とき(尺・解像度・fps・音声有無・`overlays.json`/`bgm.json` との参照クロスリンク・未使用/dangling 検出)。既定は ffprobe だけ。`--frames`/`--ocr`/`--transcribe`/`--all` で見た目・画面文字・音声発話まで opt-in で取得 |
 | `av <dir>` | **keep 後タイムラインの動きと音を知りたい**とき。`av.probe/motion.json` / `sound.json` / `motion.strip.png` に motion(scene score・freeze・フィルムストリップ)と sound(LUFS 包絡・無音・mic/system 被り・BGM/duck 設定)を出す。`--range`(出力秒)/ `--every` / `--full-res` / `--motion-only` / `--sound-only` |
+| `screen <dir>` | **画面が「いつ何を映していたか」を区間で知りたい**とき(`frames --ocr` の「点」に対する「区間」)。要 `av <dir>` 事前実行。scene score 駆動でサンプル時刻を選び、各時刻の画面 OCR を「OCR 行 Jaccard < 閾値 **かつ** scene score >= 閾値」の2条件 AND で区間へ畳んで `screen.probe/index.json` に書く。`--stills` / `--json` / `--force`。キャッシュは2層で、OCR 結果は cutplan 非依存(カットを編集し直しても増分だけ)。編集ファイルには一切書かない |
+| `screen <dir> --summarize` | **区間に「何をしている場面か」の1行要約を付けたい**とき(video-perception-P4。**本母艦で唯一の外部通信**)。区間代表 still 1枚 + その区間の OCR 先頭数行だけを vision route へ送り(動画・transcript・編集ファイル・時刻/座標は送らない・生成させない)、1行の日本語要約を `summary` に書く。40字超過・数値+単位・前後への言及のいずれかに該当する応答は区間ごとに破棄して `null` のまま続行する。vision route/AI 未設定は警告のうえ VLM 0回で終了、capability 不足は1区間目で打ち切る。`--force` なしなら `representativeSourceSec` が一致する旧区間の summary を引き継ぎ再 VLM しない。`--summarize` を付けない限り `screen` は1バイトも変わらない |
 | `record --watch` | **カーソル座標を収録と一緒に記録したい**とき(`autozoom` / `plan-effects` のカーソル dwell アンカーの元データ)。録画ボタンに連動して `<収録ファイル名>.cursor.json` を収録ファイルの隣に書く常駐 watcher。macOS 専用・ingest より前に走る |
-| `index` / `search <query>` | **収録をまたいで探したい**とき。`index` が `recordingsDir` のローカル検索インデックスを更新し、`search` が収録・素材の metadata / OCR / 文字起こしを横断検索する(収録フォルダ引数を取らない)。`recordingsDirs` 設定時も検索対象は primary root のみで、複数 root 横断はランチャーだけが対応する |
+| `index` / `search <query>` | **収録をまたいで探したい**とき。`index` が `recordingsDir` のローカル検索インデックスを更新し、`search` が収録・素材の metadata / OCR / 文字起こし / `screen.probe/index.json`(画面区間の OCR。video-perception-P2)を横断検索する(収録フォルダ引数を取らない)。**過去収録の画面に映っていた文字列(エラーメッセージ・コマンド・ファイル名)を探すときは `search "<文字列>" --kind screen`**(`--kind` は `recording \| material \| caption \| screen`)。`recordingsDirs` 設定時も検索対象は primary root のみで、複数 root 横断はランチャーだけが対応する |
 | `review <dir>` | **before/after の差分を人間がレビューできる形で束ねたい**とき。決定論のレビュー束を `review.probe/index.json` に書く |
 
 ## AI に下書きさせる

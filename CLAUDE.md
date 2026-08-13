@@ -124,6 +124,17 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
   `motion.json` / `sound.json` / `motion.strip.png`。`materials.probe/` と
   同じく実行のたびの全消しはしない差分更新型で、同じ入力 key なら前回結果を
   再利用する) /
+  `screen.probe/`(`screen <dir>` が書く**画面状態の区間トラック**+キャッシュ。
+  `index.json`(区間トラック。**cutplan 依存**=キーに `av.probe/motion.json` の
+  key(`keepsHash` 込み)を持つ)/ `ocr/<元収録秒>.json`(元収録秒ごとの OCR
+  結果。**cutplan 非依存**=元収録ファイルの mtime+size・`screenRegion`・
+  OCR 言語だけをキーにする内容アドレス式キャッシュ。だからカットを編集し直しても
+  新しくサンプルされた秒だけ OCR すれば済む)/ `stills/<segId>.png`(`--stills`
+  または `--summarize` 時のみ)。`materials.probe/` `av.probe/` と同じく
+  実行のたびの全消しはしない差分更新型。書き込み成功後に未参照の `ocr/*.json`
+  を掃除する。各区間の `summary`(video-perception-P4。`screen --summarize`
+  だけが埋める VLM の1行要約+`confidence`+`provenance`。既定 `null`で
+  `schemaVersion` は変わらない)もこの中) /
   `timeline.probe/`(GUI エディタが書くタイムライン用の差分更新型キャッシュ。
   `waveform.json` + `waveform/*.bin`、`thumbstrip.json` + `thumbstrip/*.webp` / `*.jpg`。
   編集データではなく、削除しても次回エディタ表示で再生成される) /
@@ -286,7 +297,13 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
   - 一巡監査は時刻リストを自作せず専用モードを使う: `--captions` で
     テロップ全件(各テロップの表示中間で1枚。どのテロップかはコマンド
     出力に付く)、`--every 10` でカット後タイムラインを10秒間隔+最終
-    フレームでサンプリング
+    フレームでサンプリング、**`--scenes` で画面が変わった瞬間だけ**(要
+    `av <dir>` の事前実行。`av.probe/motion.json` の scene score・freeze
+    区間から変化点+静止区間の代表+端点を決定論で自動選択する。一律間隔
+    だと変化点を取り逃す/静止区間を撮りすぎる問題を解く。上限は
+    `--max-shots`(既定は `config.yaml` の `frames.scenes.maxShots`、
+    省略時60)。前提の `motion.json` が無ければ「先に `av <dir>` を実行して
+    ください」と告知して止まる)
   - 実行のたびに `frames/` 内の古い PNG は全削除される。逆に言うと、
     JSON 編集後に frames を撮り直さず古い PNG を Read すると編集前の絵を
     見ることになるので、編集したら必ず撮り直す。これはコードでも検出される:
@@ -385,6 +402,40 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
     `--motion-only` / `--sound-only` で片側だけにもできる
   - `av.probe/` は `materials.probe/` と同じ差分更新型キャッシュ。keep 集合・
     range・設定が同じなら ffmpeg を再実行せず前回 JSON を再利用する
+- `node src/cli.ts screen <dir>` … **画面が「いつ何を映していたか」を時間の
+  区間として知る**知覚コマンド(本母艦の本丸。`frames --ocr` が時刻の**点**を
+  返すのに対し、こちらは**区間**を返す)。要 `av <dir>` の事前実行
+  (`av.probe/motion.json` が無ければ告知して exit 1)。
+  `av.probe/motion.json` の scene score から**変化点に密・静止に疎な**サンプル
+  時刻を選び(`frames --scenes` と同じ `selectSceneTimes`)、各時刻で元収録の
+  フル解像度 `screenRegion` を OCR し、**隣接サンプルの OCR 行 Jaccard 係数が
+  閾値未満 かつ scene score が閾値以上**(2条件 AND)のところだけを境界にして
+  区間へ畳む。出力は `screen.probe/index.json`。
+  - **AND が必須**: OCR だけだとカーソル点滅・時計・プログレスバーで境界が
+    乱発し、scene score だけだとスクロールで乱発する
+  - `--stills` で区間代表 PNG も残す / `--json` で index.json を stdout へ /
+    `--force` で2層キャッシュを両方無視して全再計算
+  - **キャッシュは2層**。OCR 結果(`ocr/<元収録秒>.json`)は cutplan 非依存
+    なので、**カットを編集し直しても新しくサンプルされた秒だけ OCR すれば済む**
+  - `describe <dir> --json` は `screen.probe/index.json` があれば `screen`
+    キーで区間を**そのまま**出す(再計算しない)。散文へ `[画面]` 行を出すのは
+    `config.yaml` の `describe.screen: true` のときだけ(既定オフ=バイト等価)
+  - cutplan を編集したまま撮り直していないと `validate` が「`screen.probe/`
+    が古い」と警告する(exit 0)
+  - **OCR 非対応環境(macOS 以外)でも区間トラックは成立する**(scene score
+    だけで境界を決め、`ocr` が null の区間になる)
+  - **`--summarize`(video-perception-P4。本母艦で唯一の外部通信)**: 区間へ
+    VLM(vision route)1行要約を付ける。**外部へ送るのは区間代表 still 1枚 +
+    その区間の OCR 先頭数行だけ**(動画・transcript・編集ファイル・時刻/座標は
+    送らない・生成させない)。`--stills` を暗黙に含意する。後段検証
+    (40字超過・数値+単位・前後への言及のいずれかに該当したら破棄して
+    `summary: null`)を通ったものだけ書く。vision route 未設定/AI 未設定は
+    警告のうえ VLM 0回で決定論のまま終了、capability 不足は1区間目で打ち切り、
+    個別の呼び出し失敗はその区間だけ `null` にして続行する。cutplan 編集後の
+    再実行では `representativeSourceSec` が一致する旧区間から summary を
+    provenance ごと引き継ぐ(`--force` なしなら再 VLM しない)。`--summarize`
+    を付けない限り `screen` は1バイトも変わらない(VLM 0回)。画面に機密が
+    映る収録では使わないこと
 - `node src/cli.ts bgm-fit <dir>` … **既存の `bgm.json` の音量/duck/フェードを
   実測から補正する**コマンド(`plan-bgm` が BGM を**作る**側、こちらは**直す**側)。
   要 `av <dir>` の事前実行(`av.probe/sound.json` が無ければ告知して exit 1)。
@@ -431,6 +482,15 @@ JSON がプロジェクトの正のデータ。**このリポジトリで「動�
   画面 OCR(区間代表フレームを自前 Vision OCR。`ocr: true`。macOS 依存・
   非対応環境は警告のうえ自動で劣化)を添えられる。詳細は docs/usage.md
   「plan の知覚(config.yaml の plan.perception)」参照
+- 同じく `plan` / `plan --cuts-only` には、`config.yaml` の
+  `plan.perception.cursor`(既定オフ。書かない限り LLM 入力はバイト等価)で
+  カーソル操作(クリック回数・停留(dwell)回数と最長秒・静止比率・待機
+  カーソル比率)を各区間へ添えられる。`record --watch` が書く
+  `<recording base>.cursor.json` サイドカーだけから計算する決定論(新規計測
+  なし)。サイドカー不在は警告なしで注入をスキップする(opt-in の収録方式
+  なので不在は異常ではない)。**`remeta` には配線しない**(カーソル操作は
+  章立て・タイトル・概要欄の判断材料にならないため)。詳細は
+  docs/guides/cut-planning.md「plan の知覚」参照
 - 同じく `plan` / `plan --cuts-only` には、`config.yaml` の
   `plan.styleProfile`(既定オフ。書かない限り LLM 入力・`plan.raw.txt` は
   この機能導入前とバイト等価)で `style-profile` が抽出した style profile
@@ -519,6 +579,7 @@ node src/cli.ts describe <dir> --json  # 機械可読な完全射影(発言・�
 node src/cli.ts frames <dir> --t <times>  # 指定時刻を最終合成の見た目で PNG に
 node src/cli.ts frames <dir> --captions   # テロップ全件を一巡監査(1件1枚)
 node src/cli.ts frames <dir> --every 10   # カット後全体を10秒間隔でサンプル
+node src/cli.ts frames <dir> --scenes     # 画面の変化点+静止区間の代表を自動選択(要 av <dir>)
 node src/cli.ts plan <dir> --cuts-only  # カット判断だけやり直す(章・タイトル・概要欄は触らない)
 node src/cli.ts frames <dir> --every 10 --ocr  # 画面内テキストを Apple Vision で OCR(frames/*.ocr.json)
 node src/cli.ts frames <dir> --t 90 --full-res  # ベース映像を元収録のフル解像度にして合成 still を鮮明に
@@ -529,6 +590,8 @@ node src/cli.ts material-fit <dir>  # 素材の尺整合・dangling/unused を�
 node src/cli.ts effect-check <dir>  # 演出(zoom/blur/annotation)を検品する(決定論+任意VLM。effect-check.json / effect-fix.suggested.json)
 node src/cli.ts effect-check <dir> --no-vlm  # 決定論チェックのみ(vision route 未設定でも同じ結果になる)
 node src/cli.ts av <dir>  # keep後タイムラインの motion/sound を知る(av.probe/*.json + motion.strip.png)
+node src/cli.ts screen <dir>  # 要 av 事前実行。画面状態の区間トラックを作る(screen.probe/index.json。OCR行のJaccard AND sceneScore で境界判定・2層キャッシュ)
+node src/cli.ts screen <dir> --summarize  # 区間へ VLM 1行要約を付ける(本母艦で唯一の外部通信。still 1枚+OCR数行だけ送る)
 node src/cli.ts av <dir> --range 10-25 --motion-only  # 出力10-25秒の動きだけ調べる
 node src/cli.ts bgm-fit <dir>  # 要 av <dir> 事前実行。BGM の音量/duck/フェードを実測から補正提案(bgm-fit.json / bgm-fit.suggested.json)。決定論のみ(LLM不使用)
 node src/cli.ts style-profile --from <path> [--from <path> ...] [--name <名前>]  # 任意の動画/収録からスタイルプロファイルを抽出(テンポ・字幕密度/位置・ラウドネス・構成+補正デルタ)。決定論のみ・channel直下の style.probe/<名前>.json に書く(<dir> ではなく --from 主導)

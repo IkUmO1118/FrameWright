@@ -26,6 +26,9 @@ import {
   DEFAULT_AI_MAX_OUTPUT_TOKENS,
   DEFAULT_PERCEPTION_OCR_MAX_LINES,
   DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS,
+  DEFAULT_PERCEPTION_CURSOR_MIN_DWELL_MS,
+  DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD,
+  DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES,
   DEFAULT_PLAN_HARNESS_MAX_TOOL_CALLS,
   DEFAULT_PLAN_HARNESS_MAX_SPLITS,
   DEFAULT_PLAN_LOOP_MAX_ITERATIONS,
@@ -587,6 +590,12 @@ ocr:
   }
 });
 
+const DEFAULT_CURSOR_OPTIONS = {
+  minDwellMs: DEFAULT_PERCEPTION_CURSOR_MIN_DWELL_MS,
+  moveThreshold: DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD,
+  waitTypes: DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES,
+};
+
 test("resolvePerceptionCfg: plan 省略時は全オフ+既定値", () => {
   assert.deepEqual(resolvePerceptionCfg({} as Config), {
     audio: false,
@@ -594,9 +603,14 @@ test("resolvePerceptionCfg: plan 省略時は全オフ+既定値", () => {
     ocrMaxSegments: DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS,
     ocrMaxLines: DEFAULT_PERCEPTION_OCR_MAX_LINES,
     systemSpeech: false,
+    cursor: false,
+    cursorOptions: DEFAULT_CURSOR_OPTIONS,
   });
   assert.equal(DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS, 40);
   assert.equal(DEFAULT_PERCEPTION_OCR_MAX_LINES, 6);
+  assert.equal(DEFAULT_PERCEPTION_CURSOR_MIN_DWELL_MS, 600);
+  assert.equal(DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD, 0.02);
+  assert.deepEqual(DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES, ["wait", "busybutclickable"]);
 });
 
 test("resolvePerceptionCfg: plan.perception 省略時も全オフ+既定値", () => {
@@ -606,6 +620,8 @@ test("resolvePerceptionCfg: plan.perception 省略時も全オフ+既定値", ()
     ocrMaxSegments: DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS,
     ocrMaxLines: DEFAULT_PERCEPTION_OCR_MAX_LINES,
     systemSpeech: false,
+    cursor: false,
+    cursorOptions: DEFAULT_CURSOR_OPTIONS,
   });
 });
 
@@ -618,6 +634,8 @@ test("resolvePerceptionCfg: audio だけ指定すれば他は既定のまま", (
       ocrMaxSegments: DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS,
       ocrMaxLines: DEFAULT_PERCEPTION_OCR_MAX_LINES,
       systemSpeech: false,
+      cursor: false,
+      cursorOptions: DEFAULT_CURSOR_OPTIONS,
     },
   );
 });
@@ -625,9 +643,28 @@ test("resolvePerceptionCfg: audio だけ指定すれば他は既定のまま", (
 test("resolvePerceptionCfg: 全項目を明示指定すればそのまま通る", () => {
   assert.deepEqual(
     resolvePerceptionCfg({
-      plan: { perception: { audio: true, ocr: true, ocrMaxSegments: 10, ocrMaxLines: 3, systemSpeech: true } },
+      plan: {
+        perception: {
+          audio: true,
+          ocr: true,
+          ocrMaxSegments: 10,
+          ocrMaxLines: 3,
+          systemSpeech: true,
+          cursor: true,
+          cursorDwell: { minDwellMs: 800, moveThreshold: 0.05 },
+          cursorWaitTypes: ["wait"],
+        },
+      },
     } as Config),
-    { audio: true, ocr: true, ocrMaxSegments: 10, ocrMaxLines: 3, systemSpeech: true },
+    {
+      audio: true,
+      ocr: true,
+      ocrMaxSegments: 10,
+      ocrMaxLines: 3,
+      systemSpeech: true,
+      cursor: true,
+      cursorOptions: { minDwellMs: 800, moveThreshold: 0.05, waitTypes: ["wait"] },
+    },
   );
 });
 
@@ -636,6 +673,18 @@ test("resolvePerceptionCfg: systemSpeech 省略時は false", () => {
     resolvePerceptionCfg({ plan: { perception: { audio: true } } } as Config).systemSpeech,
     false,
   );
+});
+
+test("resolvePerceptionCfg: cursor 省略時は false、cursorDwell の一部だけ指定すれば残りは既定", () => {
+  const pc = resolvePerceptionCfg({
+    plan: { perception: { cursorDwell: { minDwellMs: 900 } } },
+  } as Config);
+  assert.equal(pc.cursor, false);
+  assert.deepEqual(pc.cursorOptions, {
+    minDwellMs: 900,
+    moveThreshold: DEFAULT_PERCEPTION_CURSOR_MOVE_THRESHOLD,
+    waitTypes: DEFAULT_PERCEPTION_CURSOR_WAIT_TYPES,
+  });
 });
 
 test("resolveCandidatesCfg: candidates 省略時は enabled=false+既定値(バイト等価の要)", () => {
@@ -690,8 +739,9 @@ test("resolvePerceptionStatus: plan.perception 未指定なら explicit=false �
     ocrMaxSegments: DEFAULT_PERCEPTION_OCR_MAX_SEGMENTS,
     ocrMaxLines: DEFAULT_PERCEPTION_OCR_MAX_LINES,
     systemSpeech: false,
+    cursor: false,
     warnings: [
-      "plan.perception が config.yaml にありません。plan の知覚(audio/ocr/systemSpeech)は全てオフです。",
+      "plan.perception が config.yaml にありません。plan の知覚(audio/ocr/systemSpeech/cursor)は全てオフです。",
     ],
   });
 });
@@ -699,7 +749,7 @@ test("resolvePerceptionStatus: plan.perception 未指定なら explicit=false �
 test("resolvePerceptionStatus: 明示 config なら warning なし", () => {
   assert.deepEqual(
     resolvePerceptionStatus({
-      plan: { perception: { audio: true, ocr: true, ocrMaxSegments: 10, ocrMaxLines: 3 } },
+      plan: { perception: { audio: true, ocr: true, ocrMaxSegments: 10, ocrMaxLines: 3, cursor: true } },
     } as Config),
     {
       explicit: true,
@@ -708,6 +758,7 @@ test("resolvePerceptionStatus: 明示 config なら warning なし", () => {
       ocrMaxSegments: 10,
       ocrMaxLines: 3,
       systemSpeech: false,
+      cursor: true,
       warnings: [],
     },
   );
@@ -717,18 +768,18 @@ test("formatPerceptionStatusLines: warning と status 行を CLI 向け文言で
   assert.deepEqual(
     formatPerceptionStatusLines(resolvePerceptionStatus({} as Config)),
     [
-      "警告: plan.perception が config.yaml にありません。plan の知覚(audio/ocr/systemSpeech)は全てオフです。",
-      "plan 知覚: audio=off / ocr=off / systemSpeech=off",
+      "警告: plan.perception が config.yaml にありません。plan の知覚(audio/ocr/systemSpeech/cursor)は全てオフです。",
+      "plan 知覚: audio=off / ocr=off / systemSpeech=off / cursor=off",
     ],
   );
   assert.deepEqual(
     formatPerceptionStatusLines(
       resolvePerceptionStatus({
-        plan: { perception: { audio: true, ocr: true, systemSpeech: true } },
+        plan: { perception: { audio: true, ocr: true, systemSpeech: true, cursor: true } },
       } as Config),
     ),
     [
-      "plan 知覚: audio=on / ocr=on(max 40 segments, 6 lines) / systemSpeech=on",
+      "plan 知覚: audio=on / ocr=on(max 40 segments, 6 lines) / systemSpeech=on / cursor=on",
     ],
   );
 });

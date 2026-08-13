@@ -5,7 +5,8 @@ export type RetrievalDocumentKind =
   | "chapter"
   | "material"
   | "material-ocr"
-  | "material-transcript";
+  | "material-transcript"
+  | "screen";
 
 export interface RetrievalDocument {
   id: string;
@@ -36,7 +37,7 @@ export interface RetrievalIndex {
 
 export interface RetrievalQuery {
   query: string;
-  kind?: "recording" | "material" | "caption";
+  kind?: "recording" | "material" | "caption" | "screen";
   scope?: "current" | "other" | "all";
   currentRecording?: string;
   limit?: number;
