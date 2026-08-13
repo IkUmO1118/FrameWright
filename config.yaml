@@ -419,46 +419,46 @@ plan:
     #   minDwellMs: 600
     #   moveThreshold: 0.02
     # cursorWaitTypes: ["wait", "busybutclickable"]   # 待機系 cursorType(完全一致)
-  # plan --cuts-only の観測→再調整ループ。省略/0/1 は従来の1ショット。
-  # targetOutDurationSec は単発 plan にも surface される(設定するとプロンプトに
-  # 「目標の出力尺」行が1行足される。ループが無効でも読まれる)
-  # loop:
-  #   maxIterations: 0
-  #   targetOutDurationSec: null
-  #   stopWhenAssertionsPass: true
+    # plan --cuts-only の観測→再調整ループ。省略/0/1 は従来の1ショット。
+    # targetOutDurationSec は単発 plan にも surface される(設定するとプロンプトに
+    # 「目標の出力尺」行が1行足される。ループが無効でも読まれる)
+    # loop:
+    #   maxIterations: 0
+    #   targetOutDurationSec: null
+    #   stopWhenAssertionsPass: true
 
-  # cut 判断を tool+検証ループのエージェントにする(H1/H2)。既定 false=
-  # 従来の単発/pushループ経路とバイト等価。要 ai の structured route が
-  # anthropic 等 completeAgentic 対応アダプタ(非対応なら警告のうえ自動フォールバック)
-  # harness:
-  #   agentic: false
-  #   maxToolCalls: 16   # 1生成ターンあたりの tool 呼び出し上限
-  #   applySplit: false  # SD5(H6): 確信区間だけ候補内部を語境界で分割(R0 突破)。要 agentic:true + wordTimestamps。
-  #                      # 既定 false=候補単位(SD4)とバイト等価。分割は apply+validate/assert が安全網
-  #   maxSplits: 4       # 1ターンの分割上限(確信区間のみ=全面 apply 移行はしない)
-  #   tools:
-  #     frames: true
-  #     av: true
-  #     materials: true
-  #     ocr: true
+    # cut 判断を tool+検証ループのエージェントにする(H1/H2)。既定 false=
+    # 従来の単発/pushループ経路とバイト等価。要 ai の structured route が
+    # anthropic 等 completeAgentic 対応アダプタ(非対応なら警告のうえ自動フォールバック)
+    # harness:
+    #   agentic: false
+    #   maxToolCalls: 16   # 1生成ターンあたりの tool 呼び出し上限
+    #   applySplit: false  # SD5(H6): 確信区間だけ候補内部を語境界で分割(R0 突破)。要 agentic:true + wordTimestamps。
+    #                      # 既定 false=候補単位(SD4)とバイト等価。分割は apply+validate/assert が安全網
+    #   maxSplits: 4       # 1ターンの分割上限(確信区間のみ=全面 apply 移行はしない)
+    #   tools:
+    #     frames: true
+    #     av: true
+    #     materials: true
+    #     ocr: true
 
-  # describe の任意露出(既定オフ=散文/--json ともバイト等価)
-  # describe:
-  #   pauses: false      # keep 内の間の位置と長さを出す
-  #   pauseMax: 3
-  #   pauseMinSec: 0.6
-  #   screen: false      # 画面区間(screen.probe/index.json)を散文へ [画面] 行で出す
-  #                      # (--json の screen キーはこの設定と無関係で、
-  #                      #  screen.probe/index.json が在れば常に出る)
+    # describe の任意露出(既定オフ=散文/--json ともバイト等価)
+    # describe:
+    #   pauses: false      # keep 内の間の位置と長さを出す
+    #   pauseMax: 3
+    #   pauseMinSec: 0.6
+    #   screen: false      # 画面区間(screen.probe/index.json)を散文へ [画面] 行で出す
+    #                      # (--json の screen キーはこの設定と無関係で、
+    #                      #  screen.probe/index.json が在れば常に出る)
 
-  # カーソル dwell(停留)からズーム候補を作る(plan-effects。OpenScreen移植D2)。
-  # <recording base>.cursor.json サイドカー(record --watch)が無ければ一切
-  # 参照されない。既定値は OpenScreen 自身のチューニング(30Hz・製品デモ向け)
-  # なので、収録本数が増えたら再調整を検討する
-  # 【調整メモ 2026-07-24】~/Movies/framewright/test で実測: 既定 max2600ms は
-  # 「対象に置いて数秒〜十数秒しゃべる」チュートリアルの長い注視(このクリップは
-  # 9.4秒の静止すらあった)を丸ごと除外し、dwell候補が7件しか出ない。上限を
-  # 8000ms へ上げると10件に増える。長い注視こそズームしたい対象なので上限を緩和。
+    # カーソル dwell(停留)からズーム候補を作る(plan-effects。OpenScreen移植D2)。
+    # <recording base>.cursor.json サイドカー(record --watch)が無ければ一切
+    # 参照されない。既定値は OpenScreen 自身のチューニング(30Hz・製品デモ向け)
+    # なので、収録本数が増えたら再調整を検討する
+    # 【調整メモ 2026-07-24】~/Movies/framewright/test で実測: 既定 max2600ms は
+    # 「対象に置いて数秒〜十数秒しゃべる」チュートリアルの長い注視(このクリップは
+    # 9.4秒の静止すらあった)を丸ごと除外し、dwell候補が7件しか出ない。上限を
+    # 8000ms へ上げると10件に増える。長い注視こそズームしたい対象なので上限を緩和。
   cursor:
     minDwellMs: 450 # 停留とみなす最小継続時間
     maxDwellMs: 8000 # これを超えると意図的な作業とみなし除外(既定2600→8000。上記メモ)
@@ -548,62 +548,12 @@ bgmFit:
   minChaptersForVariety: 3 # 章がこの数以上あると BGM 単調を警告
   # AI(意味カット・章立て・タイトル案・AI提案)
 ai:
-  # このセクションを丸ごと省略したときの既定は API(CLI ではない):
-  #   ANTHROPIC_API_KEY があれば anthropic / claude-sonnet-5
-  #   無くて OPENAI_API_KEY があれば openai / gpt-5.4-mini
-  #   どちらも無ければ AI 呼び出し時にエラー(決定論だけの経路は動く)
-  # CLI(claude-code / codex)を使いたいときは下のように明示する
-  #
-  # claude-code: Claude Code の `claude` CLI を使う(APIキー不要・画像は不可)
-  # codex:       Codex CLI の `codex exec` を使う(実験的・画像は不可)
-  # anthropic:   Anthropic API を使う(ANTHROPIC_API_KEY と model が必要)
-  # openai:      OpenAI API を使う(OPENAI_API_KEY と model が必要)
   profiles:
-    claude-code:
+    local:
       adapter: claude-code
-    codex:
-      adapter: codex
-    cloud-vision:
-      adapter: openai
-      model: gpt-5.4-mini
-    openai-main:
-      adapter: openai
-      model: gpt-4.1
+      model: auto
   routes:
-    text: codex
-    structured: codex
-    vision: cloud-vision
-  # 旧形式(後方互換):
-  # provider: codex
-  # auto: CLI provider の既定モデル。API provider ではモデル名を明示する
-  # model: gpt-5.4-mini
-  #
-  # 推奨の新形式(profiles + routes)。text/structured/vision を分けられる。
-  # profiles:
-  #   local:
-  #     adapter: openai-compatible
-  #     protocol: chat-completions
-  #     baseUrl: http://127.0.0.1:11434/v1
-  #     model: qwen-local
-  #     auth: { type: none }
-  #     capabilities:
-  #       structuredOutput: json-object
-  #       imageInput: false
-  #   cloud-vision:
-  #     adapter: openai
-  #     model: gpt-5.4-mini
-  # routes:
-  #   text: local
-  #   structured: local
-  #   vision: cloud-vision
-  #
-  # 接続確認:
-  #   node src/cli.ts ai doctor
-  #   node src/cli.ts ai doctor --route vision
-
-  # ログ/可観測性。workflow(AI 呼び出し・ステージ・外部ツール)を stderr にどれだけ
-  # 出すか。quiet=AI 行も抑止 / normal=AI+ステージ(既定) / verbose=ffmpeg・whisper・
-  # headless Chrome まで1行ずつ。環境変数 FRAMEWRIGHT_LOG とグローバル --verbose/--quiet が
-  # この設定より優先。stdout(describe --json 等の JSON 射影)は level に関わらず不変。
+    text: local
+    structured: local
 log:
   level: normal
