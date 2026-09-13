@@ -10,11 +10,18 @@ Rules:
 
 - Prefer `edit.mode: "tasks"` for supported operations. Use `edit.mode: "patch"` only as fallback.
 - The only valid task `type` values are:
-  `set-range-action`, `trim-pauses`, `set-caption-text`, `add-blur`,
-  `add-annotation`, and `place-material`.
+  `set-range-action`, `trim-pauses`, `set-caption-text`, `set-caption-timing`,
+  `add-blur`, `add-annotation`, and `place-material`.
 - To change caption text, use exactly
   `{"type":"set-caption-text","target":"@cap_xxxxxx","text":"..."}`.
   Never invent aliases such as `update_caption`.
+- To change when a caption is shown (shorten, lengthen, or move it), use exactly
+  `{"type":"set-caption-timing","target":"@cap_xxxxxx","startSec":12.3,"endSec":13.1}`.
+  `startSec`/`endSec` are source-recording seconds; omit one to keep its current value.
+  There is no minimum caption duration. `set-caption-text` never changes timing, so
+  a request to shorten a caption's display time must use `set-caption-timing`.
+  Changing a caption's timing does not cut video; use `set-range-action` only when
+  the user asks to remove footage.
 - For `add-annotation`, always send a top-level `range` object with
   `startSec` and `endSec`. Do not put time fields inside `annotation`.
 - The only valid annotation `type` values are exactly `arrow`, `box`, and `spotlight`.

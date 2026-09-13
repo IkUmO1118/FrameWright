@@ -34,6 +34,8 @@ export type EditIntent =
       reason: string;
     }
   | { type: "set-caption-text"; target: `@cap_${string}`; text: string }
+  /** テロップの表示区間(元収録の秒)。省略側は現在値を保つ。words[] は新区間へクリップする */
+  | { type: "set-caption-timing"; target: `@cap_${string}`; startSec?: number; endSec?: number }
   | {
       type: "add-blur";
       range: { startSec: number; endSec: number };
@@ -251,6 +253,40 @@ export function compileEditIntents(
       caption.text = intent.text;
       transcriptChanged = true;
       summary.push(`${intent.target} の字幕を変更`);
+      return;
+    }
+    if (intent.type === "set-caption-timing") {
+      const validSec = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0);
+      if (typeof intent.target !== "string" || !intent.target.startsWith("@cap_")
+        || !validSec(intent.startSec) || !validSec(intent.endSec)
+        || (intent.startSec === undefined && intent.endSec === undefined)) {
+        errors.push(problem(index, "target または startSec/endSec が不正です"));
+        return;
+      }
+      const caption = transcript.segments.find((segment) => `@${segment.id}` === intent.target);
+      if (!caption) {
+        errors.push(problem(index, `${intent.target} が見つかりません`));
+        return;
+      }
+      const start = round(intent.startSec ?? caption.start);
+      const end = round(intent.endSec ?? caption.end);
+      if (!(end > start)) {
+        errors.push(problem(index, `${intent.target} の区間が不正です(${start}-${end})`));
+        return;
+      }
+      caption.start = start;
+      caption.end = end;
+      // words[] は描画時に区間へクリップされるが、範囲外のまま残すと validate が
+      // 警告するので新区間へ揃える(区間外に完全に出た語は落とす)
+      if (caption.words) {
+        const words = caption.words
+          .filter((w) => w.end > start && w.start < end)
+          .map((w) => ({ ...w, start: Math.max(w.start, start), end: Math.min(w.end, end) }));
+        if (words.length > 0) caption.words = words;
+        else delete caption.words;
+      }
+      transcriptChanged = true;
+      summary.push(`${intent.target} の表示区間を${start}-${end}秒に変更`);
       return;
     }
     if (intent.type === "add-blur") {
