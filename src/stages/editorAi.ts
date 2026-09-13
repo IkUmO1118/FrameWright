@@ -425,21 +425,40 @@ function normalizeReviewRange(v: unknown): ReviewRange | undefined {
 
 function normalizeEditIntents(value: unknown): EditIntent[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  return value.map((item) => {
+  // flatMap: 1件の update_caption が「文言」と「表示区間」の2 intent に分かれうる
+  return value.flatMap((item): EditIntent | EditIntent[] => {
     if (!isObj(item)) return item as unknown as EditIntent;
-    if (item.type === "update_caption" || item.type === "set-caption-text") {
+    if (item.type === "update_caption" || item.type === "set-caption-text" || item.type === "set-caption-timing") {
       const rawTarget =
         item.target ?? item.caption ?? item.captionId ?? item.caption_id ?? item.id ?? item.ref;
       const target =
         typeof rawTarget === "string" && rawTarget.startsWith("cap_")
           ? `@${rawTarget}`
           : rawTarget;
-      return {
-        ...item,
-        type: "set-caption-text",
-        target,
-        text: item.text ?? item.value ?? item.newText ?? item.new_text ?? item.captionText,
-      } as unknown as EditIntent;
+      // 時刻を捨てて文言だけの intent にすると「テロップを短くして」が黙って
+      // 無視されるので、時刻指定があれば set-caption-timing として必ず残す
+      const range = isObj(item.range) ? item.range : null;
+      const secOf = (...candidates: unknown[]) => candidates.find(isFiniteNonNegative);
+      const startSec = secOf(item.startSec, item.start, item.start_sec, range?.startSec, range?.start);
+      const endSec = secOf(item.endSec, item.end, item.end_sec, range?.endSec, range?.end);
+      const timing = startSec !== undefined || endSec !== undefined
+        ? [{
+            type: "set-caption-timing",
+            target,
+            ...(startSec !== undefined ? { startSec } : {}),
+            ...(endSec !== undefined ? { endSec } : {}),
+          } as unknown as EditIntent]
+        : [];
+      if (item.type === "set-caption-timing") {
+        return timing.length > 0 ? timing : ({ ...item, target } as unknown as EditIntent);
+      }
+      const text = item.text ?? item.value ?? item.newText ?? item.new_text ?? item.captionText;
+      // 時刻だけの update_caption に文言 intent を作ると text 欠落エラーで提案全体が落ちる
+      if (text === undefined && timing.length > 0) return timing;
+      return [
+        { ...item, type: "set-caption-text", target, text } as unknown as EditIntent,
+        ...timing,
+      ];
     }
     if (item.type === "add-annotation") {
       const range =
@@ -557,6 +576,7 @@ const EDITOR_AI_RESPONSE_SCHEMA: JsonSchemaTextFormat = {
                         "set-range-action",
                         "trim-pauses",
                         "set-caption-text",
+                        "set-caption-timing",
                         "add-blur",
                         "add-annotation",
                         "place-material",
@@ -564,6 +584,8 @@ const EDITOR_AI_RESPONSE_SCHEMA: JsonSchemaTextFormat = {
                     },
                     target: { type: "string" },
                     text: { type: "string" },
+                    startSec: { type: "number" },
+                    endSec: { type: "number" },
                     range: { type: "object" },
                     action: { enum: ["keep", "cut"] },
                     reason: { type: "string" },

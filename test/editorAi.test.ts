@@ -202,6 +202,26 @@ test("parseAiPatchResponse: legacy update_caption intentを正規化する", () 
   }]);
 });
 
+test("parseAiPatchResponse: update_caption の時刻は捨てず set-caption-timing に分ける", () => {
+  const parsed = parseAiPatchResponse(JSON.stringify({
+    edit: {
+      mode: "tasks",
+      tasks: [
+        { type: "update_caption", target: "@cap_aaaaaa", text: "短い字幕", end: 1.2 },
+        { type: "update_caption", caption_id: "cap_bbbbbb", range: { startSec: 3, endSec: 3.4 } },
+        { type: "set-caption-timing", target: "cap_cccccc", endSec: 5.1 },
+      ],
+    },
+    review: { frames: [], notes: [] },
+  }));
+  assert.deepEqual(parsed.tasks?.map((t) => ({ ...t })), [
+    { type: "set-caption-text", target: "@cap_aaaaaa", text: "短い字幕", end: 1.2 },
+    { type: "set-caption-timing", target: "@cap_aaaaaa", endSec: 1.2 },
+    { type: "set-caption-timing", target: "@cap_bbbbbb", startSec: 3, endSec: 3.4 },
+    { type: "set-caption-timing", target: "@cap_cccccc", endSec: 5.1 },
+  ]);
+});
+
 test("parseAiPatchResponse: caption field aliasと@無しidを正規化する", () => {
   const parsed = parseAiPatchResponse(JSON.stringify({
     edit: {
