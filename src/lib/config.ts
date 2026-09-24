@@ -183,6 +183,11 @@ export interface Config {
       pauseFullSec?: number;
       /** 断片の表示秒がこれ未満だと減点する(一瞬で消えるテロップの抑制)。省略時 0.9 */
       minDurationSec?: number;
+      /** 空白区切りの segment(英語など。ラテン文字主体で空白を含む)の maxChars。
+       *  英字は和文より細いので長めに取る。省略時 round(maxChars * 1.6) */
+      maxCharsLatin?: number;
+      /** 空白区切りの segment の minChars。省略時 floor(maxCharsLatin * 0.4) */
+      minCharsLatin?: number;
     };
     /** システム音声(ingest.systemTrack)も第2トラックとして文字起こしし、
      *  知覚専用の transcript.system.json を書くか。省略時 false(既存挙動と
