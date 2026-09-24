@@ -74,6 +74,11 @@ whisper:
     gapSec: 0.3 # 語間がこの秒未満の無音は「間」と数えない(words[] 依存)
     pauseFullSec: 0.8 # 語間がこの秒に達すると「間」の強さが最大になる(words[] 依存)
     minDurationSec: 0.9 # 表示がこの秒未満になる断片を減点(一瞬で消えるテロップの抑制)
+    # 英語など空白で語を区切る segment(ラテン文字主体)の上限。英字は和文より細いので
+    # 長めに取る。この segment は語境界(空白)だけで折り、句読点 > 節の頭(and/but/
+    # because…) > 前置詞の前を優先、冠詞・前置詞の直後では折らない
+    maxCharsLatin: 42 # 省略時 round(maxChars * 1.6)
+    # minCharsLatin: 16 # 省略時 floor(maxCharsLatin * 0.4)
 
 # 無音検出(機械的カットの候補づくり)
 detect:

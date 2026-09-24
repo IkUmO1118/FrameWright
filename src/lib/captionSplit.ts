@@ -28,6 +28,20 @@
 // 語タイムスタンプ(words[])があれば分割後の各断片の start/end は語境界そのもの
 // (時刻を捏造しない)。無ければ文字位置で線形補間する。maxChars 以下のセグメントは
 // 一切改変しない(text/start/end/words/id をそのまま返す=導入前とバイト等価)。
+//
+// ## 空白で語を区切る言語(英語など。2026-09-24 追加)
+//
+// 上の語彙はすべて日本語なので、英語の segment に同じ規則を当てると区切りの手がかりが
+// 無く、ほぼ字数だけで空白に落ちて文の途中で刻まれていた。さらに whisper の英語
+// トークンは語頭に空白を持ち、buildWords が trim するため words[] の連結が text と
+// 一致せず、1 文字 atom(時刻は線形補間・words[] 喪失)へ落ちていた。
+// ラテン文字が主体で空白を含む segment は「空白区切りモード」として扱い、
+//   - words[] は text 上の空白を読み飛ばして位置合わせする(語 atom を保つ)
+//   - 字数上限は maxCharsLatin / minCharsLatin(英語は 1 字が細いので日本語より長い)
+//   - 区切りは語境界(空白)だけで、句読点 > 節の頭(and/but/because…) > 前置詞の前、
+//     冠詞・所有格・to などの直後は切らない
+//   - 断片の前後の空白は落とす
+// を適用する。日本語の segment の挙動は変わらない。
 
 import { round2 } from "./candidates.ts";
 import type { TranscriptSegment, WordTiming } from "../types.ts";
@@ -49,6 +63,11 @@ export interface CaptionSplitCfg {
   /** 各断片の表示秒がこれ未満だと減点する(一瞬だけ光って消えるテロップの抑制)。
    *  省略時 0.9 秒。0 以下で無効 */
   minDurationSec?: number;
+  /** 空白区切りの segment(英語など)の maxChars。英字は和文より細いので長めに取る。
+   *  省略時 round(maxChars * 1.6) */
+  maxCharsLatin?: number;
+  /** 空白区切りの segment の minChars。省略時 floor(maxCharsLatin * 0.4) */
+  minCharsLatin?: number;
 }
 
 type ResolvedCfg = Required<CaptionSplitCfg>;
@@ -159,6 +178,59 @@ const CONJUNCTION_NEXT: ReadonlySet<string> = new Set([
   "逆に", "さらに", "そこで", "ちなみに", "まず", "次に", "最後に", "そのため", "その結果",
 ]);
 
+/* ------------------------------------------------------------------ *
+ * 空白区切りモード(英語)の語彙
+ * ------------------------------------------------------------------ */
+
+/** 空白区切りの語境界(手がかりなし)の区切りの強さ。和文の文節末(格助詞)相当 */
+const LATIN_WORD_BREAK = 0.3;
+
+/** 次の語がこれなら節の頭=そこで折るのが自然(等位・従属接続詞・関係詞) */
+const LATIN_CLAUSE_START: ReadonlySet<string> = new Set([
+  "and", "but", "or", "so", "because", "which", "who", "whom", "whose", "where", "when",
+  "while", "if", "unless", "until", "although", "though", "since", "whereas", "then",
+  "yet", "however", "therefore", "otherwise",
+]);
+
+/** 次の語がこれなら句の頭(前置詞・不定詞の to)=弱めに折ってよい */
+const LATIN_PHRASE_START: ReadonlySet<string> = new Set([
+  "to", "in", "on", "at", "for", "with", "from", "of", "by", "about", "into", "onto",
+  "over", "under", "through", "after", "before", "during", "without", "within", "like",
+  "than", "as", "against", "between", "toward", "towards",
+]);
+
+/** 直前の語がこれなら次の語と強く結びつく(冠詞・所有格・前置詞など)=折らない */
+const LATIN_BINDING_PREV: ReadonlySet<string> = new Set([
+  "a", "an", "the", "my", "your", "his", "her", "its", "our", "their", "this", "these",
+  "those", "to", "of", "in", "on", "at", "for", "with", "from", "by", "into", "very",
+  "not", "no", "every", "each", "some", "any", "more", "most", "such", "i", "you're",
+  "i'm", "we're", "they're", "it's", "don't", "can't", "won't", "didn't", "doesn't",
+]);
+
+const firstLatinWord = (s: string): string =>
+  (/^[A-Za-z0-9'’]+/.exec(s.trimStart())?.[0] ?? "").toLowerCase().replace(/’/g, "'");
+const lastLatinWord = (s: string): string =>
+  (/[A-Za-z0-9'’]+$/.exec(s)?.[0] ?? "").toLowerCase().replace(/’/g, "'");
+const isWs = (ch: string): boolean => /\s/.test(ch);
+
+/**
+ * segment が空白区切りの言語(英語など)か。ラテン文字が和文字(かな・漢字)より
+ * 多く、かつ空白を含むとき true。日本語文中の "Claude Code" 程度では false のまま
+ * (従来どおり和文の規則で割る)。
+ */
+export function isSpaceDelimited(text: string): boolean {
+  let latin = 0;
+  let cjk = 0;
+  let ws = false;
+  for (const ch of text) {
+    const sc = scriptOf(ch);
+    if (sc === "latin") latin++;
+    else if (sc === "hiragana" || sc === "katakana" || sc === "kanji") cjk++;
+    else if (isWs(ch)) ws = true;
+  }
+  return ws && latin > cjk;
+}
+
 /** 次の断片の先頭に来てはいけない文字。ここでの分割は禁止(いわゆる行頭禁則)。
  *  句読点・閉じ括弧に加えて、小書き仮名・長音符・撥音は語頭に立てないので必ず含める
  *  (これが無いと「プロジェクトフ|ォルダ」のような分割が起きる) */
@@ -243,6 +315,8 @@ function atomsOf(seg: TranscriptSegment): Atom[] {
   if (words && words.length > 0 && words.map((w) => w.text).join("") === seg.text) {
     return words.map((w) => ({ text: w.text, start: w.start, end: w.end, word: w }));
   }
+  const aligned = words && words.length > 0 ? alignWordsSkippingSpaces(seg.text, words) : null;
+  if (aligned) return aligned;
   const chars = [...seg.text];
   const total = chars.length;
   const dur = seg.end - seg.start;
@@ -254,6 +328,53 @@ function atomsOf(seg: TranscriptSegment): Atom[] {
 }
 
 /**
+ * words[] を text 上へ、語間の空白を読み飛ばして位置合わせする。whisper の英語
+ * トークンは語頭に空白を持ち、buildWords が trim するため連結が text と一致しない。
+ * ここでは空白を直後の語 atom の先頭へ付けて text を過不足なく覆う(atom の連結 ===
+ * text)。空白以外の食い違いが 1 つでもあれば null(文字 atom へフォールバック)。
+ */
+function alignWordsSkippingSpaces(text: string, words: WordTiming[]): Atom[] | null {
+  const atoms: Atom[] = [];
+  let pos = 0;
+  for (const w of words) {
+    const start = pos;
+    while (pos < text.length && isWs(text[pos])) pos++;
+    if (w.text.length === 0 || !text.startsWith(w.text, pos)) return null;
+    pos += w.text.length;
+    atoms.push({ text: text.slice(start, pos), start: w.start, end: w.end, word: w });
+  }
+  if (pos < text.length) {
+    if (text.slice(pos).trim() !== "" || atoms.length === 0) return null;
+    atoms[atoms.length - 1].text += text.slice(pos);
+  }
+  return atoms;
+}
+
+/**
+ * 文末記号の直後に空白なしで次の文が続く境界か(whisper は英語で "succeed.I want" の
+ * ように文間の空白を落とすことがある)。次が大文字で始まり、直前の語が 2 字以上の
+ * ときだけ true("U.S." や "3.5" は対象外)。
+ */
+function isGluedSentenceEnd(tail: string, nextCh: string): boolean {
+  if (!/[.!?]$/.test(tail) || !/[A-Z]/.test(nextCh)) return false;
+  return lastLatinWord(tail.slice(0, -1)).length >= 2;
+}
+
+/** 空白区切りモードの語境界(atom i の直後、next が空白で始まる)の区切りの強さ */
+function latinBoundaryStrength(tail: string, ahead: string): number {
+  const endCh = lastCharOf(tail);
+  let s = Math.max(suffixBreakStrength(tail), LATIN_WORD_BREAK);
+  if (endCh === ";") s = Math.max(s, 0.8);
+  else if (endCh === ":") s = Math.max(s, 0.75);
+  const next = firstLatinWord(ahead);
+  if (LATIN_CLAUSE_START.has(next)) s = Math.max(s, 0.68);
+  else if (LATIN_PHRASE_START.has(next)) s = Math.max(s, 0.45);
+  // 直前の語が次へ強く結びつく(句読点で終わっていれば lastLatinWord は空=対象外)
+  if (LATIN_BINDING_PREV.has(lastLatinWord(tail))) s = Math.min(s, 0.05);
+  return s;
+}
+
+/**
  * 「atom i の直後で折る」ときの区切りの強さ(0..1)を全境界ぶん前計算する。
  * 最後の境界(= segment の終端)は常に 1(そこは元から切れ目)。
  *
@@ -261,18 +382,25 @@ function atomsOf(seg: TranscriptSegment): Atom[] {
  * (ATTACHING_NEXT / CONJUNCTION_NEXT)を行わない。1 文字では「な」「の」等が
  * 助詞かどうか判別できず、誤検出のほうが害が大きいため。
  */
-function boundaryStrengths(atoms: Atom[], cfg: ResolvedCfg, wordAtoms: boolean): number[] {
+function boundaryStrengths(
+  atoms: Atom[],
+  cfg: ResolvedCfg,
+  wordAtoms: boolean,
+  spaced: boolean,
+): number[] {
   const n = atoms.length;
   const out = new Array<number>(n).fill(0);
   // 括弧の深さ(atom i までを読み終えた時点)。括弧の内側では折らない
   let depth = 0;
 
   // 累積テキスト(最長一致の接尾判定に使う)。最長の接尾辞ぶんだけ持てば十分
-  const maxSuffixLen = BREAK_SUFFIXES_SORTED[0][0].length;
+  // 空白区切りモードは直前の語全体(lastLatinWord)を見るので長めに持つ
+  const maxSuffixLen = Math.max(BREAK_SUFFIXES_SORTED[0][0].length, spaced ? 32 : 0);
   let tail = "";
 
   // 境界 i の「次に来る文字列」(前方一致判定用)。最長の禁止接頭辞ぶんだけあれば十分
-  const maxPrefixLen = NO_LINE_START_PREFIXES[0]?.length ?? 0;
+  // 空白区切りモードは次の語全体(firstLatinWord)を見るので長めに持つ
+  const maxPrefixLen = Math.max(NO_LINE_START_PREFIXES[0]?.length ?? 0, spaced ? 32 : 0);
   const aheadTexts = new Array<string>(n).fill("");
   {
     let ahead = "";
@@ -301,6 +429,18 @@ function boundaryStrengths(atoms: Atom[], cfg: ResolvedCfg, wordAtoms: boolean):
     const startCh = firstCharOf(next.text);
     if (NO_START_CHARS.has(startCh) || NO_END_CHARS.has(endCh) || depth > 0) {
       out[i] = 0;
+      continue;
+    }
+
+    // --- 空白区切りモード(英語): 語境界(空白の直前)だけで折る ---
+    if (spaced) {
+      let s: number;
+      if (isWs(startCh)) s = latinBoundaryStrength(tail, aheadTexts[i]);
+      else if (isGluedSentenceEnd(tail, startCh)) s = 0.98; // whisper の "succeed.I want"
+      else s = isWs(endCh) ? 0 : 0.02; // 空白の直後・語の途中("Isn|'t")では折らない
+      const pause = pauseBreakStrength(next.start - cur.end, cfg);
+      if (s > 0 && pause > 0) s = 1 - (1 - s) * (1 - pause * 0.9);
+      out[i] = Math.max(0, Math.min(1, s));
       continue;
     }
 
@@ -357,13 +497,20 @@ function boundaryStrengths(atoms: Atom[], cfg: ResolvedCfg, wordAtoms: boolean):
  * の総和。maxChars はハード上限(唯一の例外: 1 atom 単体がそれを超える病的ケース。
  * このときだけその atom 単独を 1 断片として通し、必ず前進することを保証する)。
  */
-function pieceRanges(atoms: Atom[], cfg: ResolvedCfg, wordAtoms: boolean): Array<[number, number]> {
+function pieceRanges(
+  atoms: Atom[],
+  cfg: ResolvedCfg,
+  wordAtoms: boolean,
+  spaced: boolean,
+): Array<[number, number]> {
   const n = atoms.length;
   if (n === 0) return [];
 
   const cum = [0];
   for (const a of atoms) cum.push(cum[cum.length - 1] + clen(a.text));
-  const strength = boundaryStrengths(atoms, cfg, wordAtoms);
+  // 断片の先頭 atom が持つ空白は出力で落とすので字数に数えない(和文は常に 0)
+  const leadWs = atoms.map((a) => clen(a.text) - clen(a.text.trimStart()));
+  const strength = boundaryStrengths(atoms, cfg, wordAtoms, spaced);
 
   /** 断片 atoms[i..j](inclusive)のコスト */
   const pieceCost = (i: number, j: number, len: number): number => {
@@ -395,7 +542,7 @@ function pieceRanges(atoms: Atom[], cfg: ResolvedCfg, wordAtoms: boolean): Array
     // i を大きい順(= 断片が短い順)に見る。maxChars を超えたら以降は伸びるだけなので打ち切る。
     // 最初の候補 i = j-1(単一 atom)は常に許可するので、解は必ず存在する。
     for (let i = j - 1; i >= 0; i--) {
-      const len = cum[j] - cum[i];
+      const len = cum[j] - cum[i] - leadWs[i];
       if (len > cfg.maxChars && i < j - 1) break;
       if (best[i] === Number.POSITIVE_INFINITY) continue;
       const c = best[i] + pieceCost(i, j - 1, len);
@@ -419,18 +566,23 @@ function pieceRanges(atoms: Atom[], cfg: ResolvedCfg, wordAtoms: boolean): Array
 
 /** 1 つの segment を分割し、分割後の segment 列を返す。maxChars 以下、または分割の
  *  必要が無ければ元 segment を **そのまま**(同一参照)返す=非改変を保証。 */
-function splitOne(seg: TranscriptSegment, cfg: ResolvedCfg): TranscriptSegment[] {
+function splitOne(seg: TranscriptSegment, baseCfg: ResolvedCfg): TranscriptSegment[] {
+  const spaced = isSpaceDelimited(seg.text);
+  const cfg = spaced
+    ? { ...baseCfg, maxChars: baseCfg.maxCharsLatin, minChars: baseCfg.minCharsLatin }
+    : baseCfg;
   if (clen(seg.text) <= cfg.maxChars) return [seg];
   const atoms = atomsOf(seg);
   const wordAtoms = atoms.length > 0 && atoms[0].word !== undefined;
-  const ranges = pieceRanges(atoms, cfg, wordAtoms);
+  const ranges = pieceRanges(atoms, cfg, wordAtoms, spaced);
   if (ranges.length <= 1) return [seg]; // 割れなかった(単一ピース)=非改変
   return ranges.map(([a, b]) => {
     const slice = atoms.slice(a, b + 1);
     const piece: TranscriptSegment = {
       start: slice[0].start,
       end: slice[slice.length - 1].end,
-      text: slice.map((x) => x.text).join(""),
+      // 断片の前後の空白は落とす(空白区切りモードで語境界に残る。和文は無変化)
+      text: slice.map((x) => x.text).join("").trim(),
     };
     // track/pos/style は元 segment 属性を全ピースへ継承(whisper 直後は通常未設定)
     if (seg.track !== undefined) piece.track = seg.track;
@@ -447,12 +599,15 @@ function splitOne(seg: TranscriptSegment, cfg: ResolvedCfg): TranscriptSegment[]
 /** cfg の省略値を埋める(既定値の単一の出所) */
 export function resolveCaptionSplitCfg(cfg: CaptionSplitCfg): ResolvedCfg {
   const maxChars = cfg.maxChars;
+  const maxCharsLatin = cfg.maxCharsLatin ?? Math.round(maxChars * 1.6);
   return {
     maxChars,
     minChars: cfg.minChars ?? Math.floor(maxChars * 0.4),
     gapSec: cfg.gapSec ?? 0.3,
     pauseFullSec: cfg.pauseFullSec ?? 0.8,
     minDurationSec: cfg.minDurationSec ?? 0.9,
+    maxCharsLatin,
+    minCharsLatin: cfg.minCharsLatin ?? Math.floor(maxCharsLatin * 0.4),
   };
 }
 

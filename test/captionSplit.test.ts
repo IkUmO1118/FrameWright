@@ -4,6 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  isSpaceDelimited,
   pauseBreakStrength,
   resolveCaptionSplitCfg,
   splitLongCaptions,
@@ -292,6 +293,8 @@ test("resolveCaptionSplitCfg: 省略値(minChars/gapSec/pauseFullSec/minDuration
     gapSec: 0.3,
     pauseFullSec: 0.8,
     minDurationSec: 0.9,
+    maxCharsLatin: 42, // round(26 * 1.6)
+    minCharsLatin: 16, // floor(42 * 0.4)
   });
 });
 
@@ -314,4 +317,99 @@ test("句点でない位置では従来どおり行頭禁則が効く", () => {
   };
   const out = splitLongCaptions([seg], { maxChars: 24, minChars: 8 });
   assert.ok(out.every((s) => !s.text.startsWith("ですから")), out.map((s) => s.text).join(" | "));
+});
+
+/* ------------------------------------------------------------------ *
+ * 空白区切りモード(英語。2026-09-24)
+ * ------------------------------------------------------------------ */
+
+/** whisper の英語トークン(buildWords が語頭の空白を trim した後)を模して segment を組む。
+ *  text は語を空白で連結(whisper の text と同じ形)、words は空白なし */
+function buildEnSeg(tokens: string[], glue: Set<number> = new Set()): TranscriptSegment {
+  const words: WordTiming[] = tokens.map((text, i) => ({
+    text,
+    start: Math.round((i * 0.3) * 100) / 100,
+    end: Math.round(((i + 1) * 0.3) * 100) / 100,
+  }));
+  // glue に入っている index の語は直前へ空白なしで連結("Isn" + "'t")
+  const text = tokens.map((t, i) => (i === 0 || glue.has(i) ? t : ` ${t}`)).join("");
+  return { start: 0, end: words[words.length - 1].end, text, words };
+}
+
+// 2026-08-07 の実データ(whisper 1 発話)
+const enTokens = [
+  "And", "when", "night", "falls", ",", "Mish", "in", "aga", "realizes", "he", "'s",
+  "accomplished", "nothing", "again", "today", ".",
+];
+const enGlue = new Set([4, 6, 7, 10, 15]); // ",", "in", "aga", "'s", "." は前へ密着
+const enSeg = buildEnSeg(enTokens, enGlue);
+
+test("isSpaceDelimited: 英文は true・日本語文中の英単語程度では false", () => {
+  assert.equal(isSpaceDelimited(enSeg.text), true);
+  assert.equal(isSpaceDelimited("この処理は Claude Code というツールで自動生成できます"), false);
+  assert.equal(isSpaceDelimited("NoSpacesAtAll"), false);
+});
+
+test("英語: trim 済み words[] でも語 atom を保ち、時刻は語境界・words と text が整合", () => {
+  const out = splitLongCaptions([enSeg], { maxChars: 26 });
+  assert.ok(out.length >= 2, out.map((s) => s.text).join(" | "));
+  for (const s of out) {
+    assert.ok(s.words && s.words.length > 0, `words を保持: "${s.text}"`);
+    assert.equal(s.words![0].start, s.start);
+    assert.equal(s.words![s.words!.length - 1].end, s.end);
+    assert.equal(s.words!.map((w) => w.text).join(""), s.text.replace(/\s/g, ""));
+  }
+  assert.equal(out.reduce((n, s) => n + s.words!.length, 0), enTokens.length);
+});
+
+test("英語: 断片の前後に空白を残さず、空白で連結すると元の text に戻る", () => {
+  const out = splitLongCaptions([enSeg], { maxChars: 26 });
+  for (const s of out) assert.equal(s.text, s.text.trim());
+  assert.equal(out.map((s) => s.text).join(" "), enSeg.text);
+});
+
+test("英語: 字数上限は maxCharsLatin で、読点の直後で折る(語の途中・文の途中で刻まない)", () => {
+  const out = splitLongCaptions([enSeg], { maxChars: 26 });
+  // 旧実装: "And when night falls, " / " Mishinaga realizes " / " he's accomplished " / ...
+  assert.deepEqual(out.map((s) => s.text), [
+    "And when night falls, Mishinaga realizes",
+    "he's accomplished nothing again today.",
+  ]);
+  for (const s of out) assert.ok([...s.text].length <= 42);
+});
+
+test("英語: 節の頭(and/because 等)の前で折り、冠詞・前置詞の直後では折らない", () => {
+  // 2026-08-07 の実データ(旧実装: "You stare aimlessly at  " / "the TV, watching other  " / ...)
+  const seg = buildEnSeg(
+    [
+      "You", "stare", "aimlessly", "at", "the", "TV", ",", "watching", "other", "people's", "lives",
+      "and", "getting", "caught", "up", "in", "news", "you", "don't", "even", "need", "to", "know", ".",
+    ],
+    new Set([6, 23]),
+  );
+  const out = splitLongCaptions([seg], { maxChars: 26 });
+  assert.ok(out.length >= 2);
+  assert.ok(out.some((s) => s.text.startsWith("and ")), out.map((s) => s.text).join(" | "));
+  for (const s of out.slice(0, -1)) {
+    assert.ok(!/\b(the|a|an|at|in|of|to)$/i.test(s.text), `結合語で終わらない: "${s.text}"`);
+  }
+});
+
+test("英語: 語内のトークン境界(Isn|'t)では折らない", () => {
+  const seg = buildEnSeg(
+    ["Isn", "'t", "that", "truly", "ridiculous", "and", "isn", "'t", "it", "just", "a", "waste", "of", "time", "?"],
+    new Set([1, 7, 14]),
+  );
+  const out = splitLongCaptions([seg], { maxChars: 20, maxCharsLatin: 24 });
+  for (const s of out) assert.ok(!s.text.startsWith("'"), out.map((x) => x.text).join(" | "));
+});
+
+test("英語: 文間の空白が落ちた文末(succeed.I)でも文の切れ目として折る", () => {
+  const seg = buildEnSeg(
+    ["I", "want", "to", "succeed", ".", "I", "want", "to", "change", "my", "life", ".", "Fine", "words", "indeed", "."],
+    new Set([4, 5, 11, 12, 15]),
+  );
+  assert.equal(seg.text, "I want to succeed.I want to change my life.Fine words indeed.");
+  const out = splitLongCaptions([seg], { maxChars: 20, maxCharsLatin: 30 });
+  assert.deepEqual(out.map((s) => s.text), ["I want to succeed.", "I want to change my life.", "Fine words indeed."]);
 });
