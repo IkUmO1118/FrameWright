@@ -3,7 +3,7 @@
 // 模したミニ fixture で、特殊トークン除外・ms→秒変換・trim・confidence 転記を検査する。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildWords, applyTranscriptIds } from "../src/stages/transcribe.ts";
+import { buildWords, applyTranscriptIds, resolveTranscriptLanguage } from "../src/stages/transcribe.ts";
 import type { WhisperToken } from "../src/stages/transcribe.ts";
 import { ID_RE } from "../src/lib/ids.ts";
 import type { TranscriptSegment } from "../src/types.ts";
@@ -145,4 +145,14 @@ test("buildWords: DTW 実行でも t_dtw 無効(-1)のトークンは出さず�
     { text: "従来", offsets: { from: 100, to: 500 }, p: 0.9 },
   ];
   assert.deepEqual(buildWords(legacy), [{ text: "従来", start: 0.1, end: 0.5, confidence: 0.9 }]);
+});
+
+test("resolveTranscriptLanguage: auto なら whisper の判定結果を記録し、固定指定ならそのまま", () => {
+  assert.equal(resolveTranscriptLanguage("auto", "en"), "en");
+  assert.equal(resolveTranscriptLanguage("auto", "ja"), "ja");
+  // 判定結果が無い(古い whisper.cpp 等)ときは auto のまま
+  assert.equal(resolveTranscriptLanguage("auto", undefined), "auto");
+  assert.equal(resolveTranscriptLanguage("auto", ""), "auto");
+  // 固定指定は判定結果に関係なく config の値
+  assert.equal(resolveTranscriptLanguage("ja", "en"), "ja");
 });

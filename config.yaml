@@ -39,7 +39,12 @@ ingest:
 whisper:
   bin: whisper-cli
   model: ~/Models/whisper/ggml-large-v3-turbo-q5_0.bin
-  language: ja
+  # 文字起こしの言語。auto(既定)は whisper が冒頭30秒の音声から自動判定し、
+  # その言語で全編を起こす(判定結果は transcript.json の language に残る)。
+  # ja 等に固定すると、別言語の収録で冒頭の数文が丸ごと抜け、続く文が 0 秒始まりに
+  # ずれることがある(英語の収録を ja 固定で起こしたときに実測)。日本語専用の
+  # チャンネルで誤判定が気になる場合だけ ja に固定する
+  language: auto
   # 語/トークン単位のタイミング(transcript.json の segment.words[])を付けるか。
   # 既定 true(語タイムスタンプは karaoke/語境界カットの前提資産=W0)。
   # true だと whisper 実行が -ojf に切り替わり transcript.json が増える。

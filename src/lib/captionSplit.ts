@@ -207,6 +207,12 @@ const LATIN_BINDING_PREV: ReadonlySet<string> = new Set([
   "i'm", "we're", "they're", "it's", "don't", "can't", "won't", "didn't", "doesn't",
 ]);
 
+/** ピリオドで終わっても文末ではない略語(小文字化・ピリオド抜きで照合) */
+const LATIN_ABBREVIATIONS: ReadonlySet<string> = new Set([
+  "mr", "mrs", "ms", "dr", "prof", "st", "jr", "sr", "vs", "etc", "eg", "ie", "vol",
+  "fig", "approx", "inc", "ltd", "co", "corp",
+]);
+
 const firstLatinWord = (s: string): string =>
   (/^[A-Za-z0-9'’]+/.exec(s.trimStart())?.[0] ?? "").toLowerCase().replace(/’/g, "'");
 const lastLatinWord = (s: string): string =>
@@ -364,6 +370,13 @@ function isGluedSentenceEnd(tail: string, nextCh: string): boolean {
 function latinBoundaryStrength(tail: string, ahead: string): number {
   const endCh = lastCharOf(tail);
   let s = Math.max(suffixBreakStrength(tail), LATIN_WORD_BREAK);
+  // 空白の直前のピリオド = 文末(句点相当)。BREAK_SUFFIXES に "." を入れないのは
+  // "3.5" や "U.S." を誤認しないため。ここは空白の直前だけなので "3.5" は来ず、
+  // 1 字語("U.S." の "S")と敬称などの略語は除く(isGluedSentenceEnd と同じ規則)
+  if (endCh === ".") {
+    const prev = lastLatinWord(tail.slice(0, -1));
+    if (prev.length >= 2 && !LATIN_ABBREVIATIONS.has(prev)) s = Math.max(s, 0.98);
+  }
   if (endCh === ";") s = Math.max(s, 0.8);
   else if (endCh === ":") s = Math.max(s, 0.75);
   const next = firstLatinWord(ahead);

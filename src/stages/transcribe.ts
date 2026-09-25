@@ -28,6 +28,21 @@ interface WhisperJson {
     /** -ojf のときだけ付く(-oj には無い) */
     tokens?: WhisperToken[];
   }>;
+  /** 実際に使われた言語。`-l auto` のときは自動判定の結果が入る */
+  result?: { language?: string };
+}
+
+/**
+ * transcript.json に記録する言語。config の whisper.language が "auto" なら
+ * whisper の自動判定結果(result.language)を、それ以外は config の値をそのまま返す。
+ * 判定結果が無い(古い whisper.cpp 等)ときは "auto" のまま
+ */
+export function resolveTranscriptLanguage(
+  configured: string,
+  detected: string | undefined,
+): string {
+  if (configured !== "auto") return configured;
+  return detected && detected.length > 0 ? detected : configured;
 }
 
 /** 角括弧で囲まれた whisper の特殊トークン([_BEG_] / [_TT_441] 等) */
@@ -194,7 +209,7 @@ export async function transcribe(
 
   const transcript: Transcript = {
     ...(opts.markUnadopted ? { generatedBy: "transcribe" as const } : {}),
-    language: cfg.whisper.language,
+    language: resolveTranscriptLanguage(cfg.whisper.language, whisperJson.result?.language),
     model: cfg.whisper.model,
     segments: finalSegments,
   };
@@ -231,7 +246,7 @@ export async function transcribe(
       }))
       .filter((s) => s.text.length > 0);
     const systemTranscript: SystemTranscript = {
-      language: cfg.whisper.language,
+      language: resolveTranscriptLanguage(cfg.whisper.language, sysJson.result?.language),
       model: cfg.whisper.model,
       speaker: "system",
       segments: sysSegments,
