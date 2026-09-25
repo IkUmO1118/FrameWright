@@ -88,8 +88,8 @@ curl -L --progress-bar -o ~/Models/whisper/ggml-base.bin \
 - **本番**は既定の `large-v3-turbo-q5_0`(精度が要るとき)。モデルを戻すときも
   `config.yaml` の `whisper.model` を戻すだけで、収録データは作り直し不要
   (テロップを更新したいなら `node src/cli.ts transcribe <dir>` を再実行)。
-- どのモデルでも `language: ja`(config 既定)のまま。`.en` 付きは英語専用なので
-  日本語には使わない。
+- どのモデルでも `language: auto`(config 既定。収録ごとに言語を自動判定)のまま。
+  `.en` 付きは英語専用なので日本語には使わない。
 
 - 文字起こし・無音検出は**完全ローカル(無料)**。
 - LLM を使うのは `plan`(意味カット・章立て)だけ。**デフォルトは `claude` CLI**

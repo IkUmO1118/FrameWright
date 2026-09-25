@@ -413,3 +413,29 @@ test("英語: 文間の空白が落ちた文末(succeed.I)でも文の切れ目�
   const out = splitLongCaptions([seg], { maxChars: 20, maxCharsLatin: 30 });
   assert.deepEqual(out.map((s) => s.text), ["I want to succeed.", "I want to change my life.", "Fine words indeed."]);
 });
+
+test("英語: 空白の続くピリオド(文末)で折り、語内のトークン境界(It|'s)では折らない", () => {
+  // 2026-09-25 の実データ(旧実装: "Tired. Too much hustle. It's his fault. It" / "'s my job's fault. ...")
+  const seg = buildEnSeg(
+    [
+      "T", "ired", ".", "Too", "much", "hustle", ".", "It", "'s", "his", "fault", ".",
+      "It", "'s", "my", "job", "'s", "fault", ".", "It", "'s", "the", "world", "'s", "fault", ".",
+    ],
+    new Set([1, 2, 6, 8, 11, 13, 16, 18, 20, 23, 25]),
+  );
+  assert.equal(seg.text, "Tired. Too much hustle. It's his fault. It's my job's fault. It's the world's fault.");
+  const out = splitLongCaptions([seg], { maxChars: 26, maxCharsLatin: 42 });
+  for (const s of out) assert.ok(s.text.endsWith("."), `文末で折る: ${out.map((x) => x.text).join(" | ")}`);
+});
+
+test("英語: 略語・1字語のピリオド(Mr. / U.S.)は文末扱いしない", () => {
+  const seg = buildEnSeg(
+    ["I", "met", "Mr", ".", "Smith", "in", "the", "U", ".", "S", ".", "last", "year", "and", "we", "talked", "about", "it", "."],
+    new Set([3, 8, 9, 10, 18]),
+  );
+  const out = splitLongCaptions([seg], { maxChars: 20, maxCharsLatin: 30 });
+  assert.ok(out.length >= 2);
+  for (const s of out.slice(0, -1)) {
+    assert.ok(!/(Mr\.|U\.S\.)$/.test(s.text), `略語の直後で折らない: ${out.map((x) => x.text).join(" | ")}`);
+  }
+});

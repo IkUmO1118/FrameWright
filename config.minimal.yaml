@@ -32,7 +32,7 @@ ingest:
 whisper:
   bin: whisper-cli
   model: ~/Models/whisper/ggml-large-v3-turbo-q5_0.bin
-  language: ja
+  language: auto # 言語は自動判定(ja 等に固定も可)
 
 # 無音検出(カット候補づくり)。既定のままで実用的
 detect:
